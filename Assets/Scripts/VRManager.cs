@@ -22,6 +22,7 @@ using UnityEngine.XR.Management;
 // Adicione essa diretiva para os trechos que usam o SDK do Oculus
 #if USING_OCULUS_SDK
 using Oculus.VR;
+using OVRInput = Oculus.VR.OVRInput;
 #endif
 
 public class VRManager : MonoBehaviour {
@@ -73,8 +74,12 @@ public class VRManager : MonoBehaviour {
     private bool wasPaused = false;
 
     [Header("User Settings")]
-    [Tooltip("Identifica se esta build é do usuário 1, 2 ou 3 (afeta as mensagens enviadas)")]
-    public int userNumber = 1; // 1, 2 ou 3
+    [Tooltip("Identifica se esta build é do usuário 1, 2, 3 ou 4 (afeta as mensagens enviadas)")]
+    public int userNumber = 1; // 1, 2, 3 ou 4
+    
+    [Header("Language Settings")]
+    [Tooltip("Mapeamento de idiomas para arquivos de vídeo")]
+    private Dictionary<string, string> videoLanguageMap = new Dictionary<string, string>();
 
     [Header("Debug Settings")]
     [Tooltip("Ativa modo de diagnóstico com mais informações")]
@@ -103,6 +108,18 @@ public class VRManager : MonoBehaviour {
     [Header("VR Settings")]
     [Tooltip("Referência ao XR Origin - necessário para controle de rotação em VR")]
     public Transform xrOrigin;
+    
+    [Header("Config Menu Settings")]
+    [Tooltip("UI do menu de configuração")]
+    public GameObject configMenuUI;
+    [Tooltip("Campo de input para IP do servidor")]
+    public TMP_InputField ipInputField;
+    [Tooltip("Botão para salvar IP")]
+    public Button saveIpButton;
+    [Tooltip("Botão para fechar menu")]
+    public Button closeConfigButton;
+    private bool isConfigMenuOpen = false;
+    private string savedServerIP = "";
 
     void Awake() {
         #if UNITY_ANDROID && !UNITY_EDITOR
@@ -119,11 +136,24 @@ public class VRManager : MonoBehaviour {
             Debug.Log("✅ Cliente VR iniciando...");
             
             // Validar userNumber
-            if (userNumber < 1 || userNumber > 3) {
+            if (userNumber < 1 || userNumber > 4) {
                 LogWarning($"userNumber inválido ({userNumber}). Definindo como 1.");
                 userNumber = 1;
             }
             Log($"🎮 Configurado como Usuário {userNumber}");
+            
+            // Inicializar mapeamento de idiomas
+            InitializeVideoLanguageMap();
+            
+            // Carregar IP salvo do PlayerPrefs
+            LoadServerIP();
+            
+            // Desativar menu de configuração no início
+            if (configMenuUI != null) {
+                configMenuUI.SetActive(false);
+                isConfigMenuOpen = false;
+                Log("📋 Menu de configuração desativado no início");
+            }
             
             // Inicializar sistema individualizado de timecode para este usuário
             InitializeUserTimecodeSystem();
@@ -277,6 +307,87 @@ public class VRManager : MonoBehaviour {
         }
     }
     
+    // Inicializar mapeamento de idiomas para vídeos
+    void InitializeVideoLanguageMap() {
+        videoLanguageMap.Clear();
+        videoLanguageMap.Add("pt", "Experiencia_Aegea_Cop2025_Portugues.mp4");
+        videoLanguageMap.Add("en", "Experiencia_Aegea_Cop2025_Ingles.mp4");
+        videoLanguageMap.Add("es", "Experiencia_Aegea_Cop2025_Espannhol.mp4");
+        Log($"✅ Mapeamento de idiomas inicializado: {string.Join(", ", videoLanguageMap.Keys)}");
+    }
+    
+    // Carregar IP do servidor salvo no PlayerPrefs
+    void LoadServerIP() {
+        string prefKey = $"VRManager_ServerIP_{userNumber}";
+        savedServerIP = PlayerPrefs.GetString(prefKey, "");
+        
+        if (!string.IsNullOrEmpty(savedServerIP)) {
+            // Se tem IP salvo, usar ele
+            // Formato pode ser apenas IP (192.168.4.1) ou URI completo (ws://192.168.4.1:80)
+            if (savedServerIP.StartsWith("ws://") || savedServerIP.StartsWith("wss://")) {
+                serverUri = savedServerIP;
+            } else {
+                // Assumir porta padrão 80 se não especificada
+                serverUri = $"ws://{savedServerIP}:80";
+            }
+            Log($"✅ IP do servidor carregado do PlayerPrefs: {serverUri}");
+        } else {
+            // Usar valor padrão do campo serverUri
+            Log($"ℹ️ Nenhum IP salvo encontrado, usando valor padrão: {serverUri}");
+        }
+    }
+    
+    // Salvar IP do servidor no PlayerPrefs
+    void SaveServerIP(string ip) {
+        if (string.IsNullOrEmpty(ip)) {
+            LogError("IP não pode ser vazio!");
+            return;
+        }
+        
+        // Normalizar o IP (remover espaços, etc)
+        ip = ip.Trim();
+        
+        // Se não começa com ws:// ou wss://, adicionar ws://
+        if (!ip.StartsWith("ws://") && !ip.StartsWith("wss://")) {
+            // Se contém :, assumir que já tem porta
+            if (ip.Contains(":")) {
+                ip = "ws://" + ip;
+            } else {
+                // Adicionar porta padrão 80
+                ip = $"ws://{ip}:80";
+            }
+        }
+        
+        // Validar formato básico
+        try {
+            Uri testUri = new Uri(ip);
+            if (testUri.Scheme != "ws" && testUri.Scheme != "wss") {
+                LogError($"Formato de URI inválido: {ip}. Deve começar com ws:// ou wss://");
+                return;
+            }
+        } catch (Exception e) {
+            LogError($"Erro ao validar URI: {e.Message}");
+            return;
+        }
+        
+        // Salvar no PlayerPrefs
+        string prefKey = $"VRManager_ServerIP_{userNumber}";
+        PlayerPrefs.SetString(prefKey, ip);
+        PlayerPrefs.Save();
+        
+        savedServerIP = ip;
+        serverUri = ip;
+        
+        Log($"✅ IP do servidor salvo: {ip}");
+        UpdateDebugText($"IP salvo: {ip}");
+        
+        // Reconectar com o novo IP
+        if (!offlineMode && webSocket != null) {
+            Log("🔄 Reconectando com novo IP...");
+            ReconnectWebSocket();
+        }
+    }
+    
     // Helper para logs condicionais
     void Log(string message) {
         if (diagnosticMode) {
@@ -354,6 +465,31 @@ public class VRManager : MonoBehaviour {
             HandleEditorControls();
             #endif
 
+            // Detectar botão do controle Quest para abrir menu de configuração
+            #if UNITY_ANDROID && !UNITY_EDITOR
+            // Usar OVRInput para detectar botão do controle Quest
+            // Botões: One (A) e Two (B) do controle direito
+            if (OVRInput.GetDown(OVRInput.Button.One) ||      // Botão A (controle direito)
+                OVRInput.GetDown(OVRInput.Button.Two)) {      // Botão B (controle direito)
+                Log("🎮 Botão do controle pressionado - abrindo menu de configuração");
+                ToggleConfigMenu();
+            }
+            #endif
+            
+            // Atalho de teclado no editor para testar menu
+            #if UNITY_EDITOR
+            // Tecla A para testar menu (mesmo que o botão A do Quest)
+            if (Input.GetKeyDown(KeyCode.A)) {
+                Log("⌨️ Tecla A pressionada - abrindo menu de configuração (Editor)");
+                ToggleConfigMenu();
+            }
+            // Tecla M também funciona (mantido para compatibilidade)
+            if (Input.GetKeyDown(KeyCode.M)) {
+                Log("⌨️ Tecla M pressionada - abrindo menu de configuração (Editor)");
+                ToggleConfigMenu();
+            }
+            #endif
+
             // Verificar timeout para mostrar diagnóstico se estiver aguardando muito tempo
             if (waitingForCommands) {
                 waitingTimer += Time.deltaTime;
@@ -427,6 +563,224 @@ public class VRManager : MonoBehaviour {
         CancelInvoke(nameof(SendTimecode)); // Garantir que não há instâncias anteriores
         InvokeRepeating(nameof(SendTimecode), 0.5f, 1f);
         Log("🎯 Envio de timecodes iniciado");
+    }
+    
+    // Método para tocar vídeo baseado no idioma
+    public void PlayVideoByLanguage(string language) {
+        if (string.IsNullOrEmpty(language)) {
+            LogError("Idioma não especificado!");
+            return;
+        }
+        
+        // Normalizar idioma para minúsculas
+        language = language.ToLower().Trim();
+        
+        // Verificar se o idioma existe no mapeamento
+        if (!videoLanguageMap.ContainsKey(language)) {
+            LogError($"Idioma '{language}' não encontrado no mapeamento! Idiomas disponíveis: {string.Join(", ", videoLanguageMap.Keys)}");
+            return;
+        }
+        
+        string videoFileName = videoLanguageMap[language];
+        Log($"🎬 Reproduzindo vídeo em {language.ToUpper()}: {videoFileName}");
+        
+        // No Android, precisamos copiar de StreamingAssets para armazenamento interno primeiro
+        #if UNITY_ANDROID && !UNITY_EDITOR
+        StartCoroutine(LoadVideoFromStreamingAssets(videoFileName));
+        #else
+        // Buscar o arquivo de vídeo
+        string videoPath = FindVideoFile(videoFileName);
+        
+        if (string.IsNullOrEmpty(videoPath)) {
+            LogError($"❌ Arquivo de vídeo não encontrado: {videoFileName}");
+            UpdateDebugText($"Erro: Vídeo {videoFileName} não encontrado!");
+            return;
+        }
+        
+        // Configurar e tocar o vídeo
+        ConfigureAndPlayVideo(videoPath, videoFileName);
+        #endif
+    }
+    
+    // Corrotina para carregar vídeo de StreamingAssets no Android
+    #if UNITY_ANDROID && !UNITY_EDITOR
+    IEnumerator LoadVideoFromStreamingAssets(string fileName) {
+        string streamingAssetsPath = Path.Combine(Application.streamingAssetsPath, fileName);
+        string persistentPath = Path.Combine(Application.persistentDataPath, fileName);
+        
+        Log($"🔍 StreamingAssets: {streamingAssetsPath}");
+        Log($"🔍 PersistentData: {persistentPath}");
+        
+        // Verificar se já existe no armazenamento persistente
+        if (File.Exists(persistentPath)) {
+            Log($"✅ Vídeo já existe no armazenamento persistente: {persistentPath}");
+            ConfigureAndPlayVideo("file://" + persistentPath, fileName);
+            yield break;
+        }
+        
+        // Copiar de StreamingAssets para armazenamento persistente
+        Log("📥 Copiando vídeo de StreamingAssets para armazenamento persistente...");
+        
+        using (UnityWebRequest www = UnityWebRequest.Get(streamingAssetsPath)) {
+            yield return www.SendWebRequest();
+            
+            if (www.result == UnityWebRequest.Result.Success) {
+                try {
+                    // Criar diretório se não existir
+                    string directory = Path.GetDirectoryName(persistentPath);
+                    if (!Directory.Exists(directory)) {
+                        Directory.CreateDirectory(directory);
+                    }
+                    
+                    // Salvar arquivo
+                    File.WriteAllBytes(persistentPath, www.downloadHandler.data);
+                    Log($"✅ Vídeo copiado com sucesso: {persistentPath}");
+                    
+                    // Configurar e tocar o vídeo
+                    ConfigureAndPlayVideo("file://" + persistentPath, fileName);
+                } catch (Exception e) {
+                    LogError($"❌ Erro ao salvar vídeo: {e.Message}");
+                    UpdateDebugText($"Erro ao copiar vídeo: {e.Message}");
+                }
+            } else {
+                LogError($"❌ Erro ao carregar vídeo de StreamingAssets: {www.error}");
+                UpdateDebugText($"Erro ao carregar vídeo: {www.error}");
+                
+                // Tentar usar StreamingAssets diretamente como fallback
+                LogWarning("⚠️ Tentando usar StreamingAssets diretamente como fallback...");
+                ConfigureAndPlayVideo(streamingAssetsPath, fileName);
+            }
+        }
+    }
+    #endif
+    
+    // Método auxiliar para configurar e tocar vídeo
+    void ConfigureAndPlayVideo(string videoPath, string videoFileName) {
+        try {
+            if (videoPlayer == null) {
+                LogError("VideoPlayer não encontrado!");
+                return;
+            }
+            
+            // Parar vídeo atual se estiver tocando
+            if (videoPlayer.isPlaying) {
+                videoPlayer.Stop();
+            }
+            
+            // Configurar o caminho do vídeo
+            videoPlayer.url = videoPath;
+            currentVideo = videoFileName;
+            
+            Log($"✅ Vídeo configurado: {videoPath}");
+            Log($"📹 VideoPlayer source: {videoPlayer.source}, url: {videoPlayer.url}");
+            
+            // Verificar se o VideoPlayer está configurado corretamente
+            if (videoPlayer.source != VideoSource.Url) {
+                LogWarning($"⚠️ VideoPlayer.source não é Url (é {videoPlayer.source}), tentando configurar...");
+                videoPlayer.source = VideoSource.Url;
+            }
+            
+            // Preparar e tocar o vídeo
+            Log("🔄 Preparando vídeo...");
+            videoPlayer.Prepare();
+            
+            // Aguardar preparação antes de tocar
+            StartCoroutine(WaitForVideoPrepareAndPlay());
+            
+        } catch (Exception e) {
+            LogError($"Erro ao configurar vídeo: {e.Message}");
+            UpdateDebugText($"Erro ao carregar vídeo: {e.Message}");
+        }
+    }
+    
+    // Corrotina para aguardar preparação do vídeo antes de tocar
+    IEnumerator WaitForVideoPrepareAndPlay() {
+        float timeout = 10f; // Timeout de 10 segundos
+        float elapsed = 0f;
+        
+        Log($"⏳ Aguardando preparação do vídeo: {currentVideo}");
+        
+        while (!videoPlayer.isPrepared && elapsed < timeout) {
+            yield return null;
+            elapsed += Time.deltaTime;
+            
+            // Log a cada segundo
+            if (Mathf.FloorToInt(elapsed) != Mathf.FloorToInt(elapsed - Time.deltaTime)) {
+                Log($"⏳ Preparando vídeo... {elapsed:F1}s / {timeout}s");
+            }
+        }
+        
+        if (videoPlayer.isPrepared) {
+            Log($"✅ Vídeo preparado com sucesso!");
+            PrepareAndPlayVideo();
+            UpdateDebugText($"Reproduzindo: {currentVideo}");
+        } else {
+            LogError($"❌ Timeout ao preparar vídeo após {timeout}s. URL: {videoPlayer.url}");
+            LogError($"❌ VideoPlayer estado: isPrepared={videoPlayer.isPrepared}");
+            UpdateDebugText($"Erro: Timeout ao preparar vídeo: {currentVideo}");
+            
+            // Tentar tocar mesmo assim (às vezes funciona)
+            LogWarning("⚠️ Tentando tocar vídeo mesmo sem preparação completa...");
+            try {
+                videoPlayer.Play();
+                isPlaying = true;
+                Log("✅ Vídeo iniciado sem preparação");
+            } catch (Exception e) {
+                LogError($"❌ Erro ao tocar vídeo: {e.Message}");
+            }
+        }
+    }
+    
+    // Método para encontrar arquivo de vídeo em diferentes locais
+    string FindVideoFile(string fileName) {
+        #if UNITY_ANDROID && !UNITY_EDITOR
+        // No Android, StreamingAssets está dentro do APK e precisa de tratamento especial
+        // No Android, Application.streamingAssetsPath retorna algo como:
+        // jar:file:///data/app/com.aegea.br-xxx/base.apk!/assets/
+        
+        Log($"🔍 Application.streamingAssetsPath: {Application.streamingAssetsPath}");
+        
+        // PRIORIDADE 1: Tentar StreamingAssets (vídeos embedados)
+        // No Android, não podemos usar File.Exists() com StreamingAssets (está dentro do APK)
+        // Mas o VideoPlayer consegue acessar diretamente
+        string streamingAssetsPath = Path.Combine(Application.streamingAssetsPath, fileName);
+        Log($"🔍 Tentando StreamingAssets: {streamingAssetsPath}");
+        
+        // No Android, o VideoPlayer aceita o caminho de StreamingAssets diretamente
+        // O formato jar:file:// funciona com VideoPlayer
+        Log($"✅ Usando caminho StreamingAssets (embedado no APK): {streamingAssetsPath}");
+        return streamingAssetsPath;
+        
+        #else
+        // No Editor ou outras plataformas
+        List<string> searchPaths = new List<string>();
+        
+        // 1. StreamingAssets
+        searchPaths.Add(Path.Combine(Application.streamingAssetsPath, fileName));
+        searchPaths.Add(Path.Combine(Application.streamingAssetsPath, "Videos", fileName));
+        
+        // 2. Assets/Videos (para desenvolvimento)
+        string assetsVideoPath = Path.Combine(Application.dataPath, "Videos", fileName);
+        if (File.Exists(assetsVideoPath)) {
+            return "file://" + assetsVideoPath.Replace("\\", "/");
+        }
+        
+        // Buscar o arquivo nos caminhos
+        foreach (string path in searchPaths) {
+            try {
+                if (File.Exists(path)) {
+                    Log($"✅ Vídeo encontrado em: {path}");
+                    return path;
+                }
+            } catch (Exception e) {
+                continue;
+            }
+        }
+        
+        // Se não encontrou, tentar usar apenas o nome do arquivo
+        LogWarning($"⚠️ Arquivo não encontrado nos caminhos padrão, tentando usar apenas o nome: {fileName}");
+        return fileName;
+        #endif
     }
     
     // Método para pausar o vídeo
@@ -779,81 +1133,108 @@ void ProcessReceivedMessage(string message) {
     // Resetar o timer quando recebe qualquer mensagem
     waitingForCommands = false;
     waitingTimer = 0f;
+    
+    // NOVO FORMATO: play{id}_{idioma} (ex: play1_pt, play2_en, play3_es)
+    if (message.StartsWith("play", StringComparison.OrdinalIgnoreCase)) {
+        // Extrair ID e idioma da mensagem
+        // Formato esperado: play{id}_{idioma} (ex: play1_pt, play2_en, play3_es, play4_pt)
+        string[] parts = message.Substring(4).Split('_'); // Remove "play" e divide por "_"
         
-        // FLUXO SIMPLIFICADO - comandos que ESP32 envia para ambos os usuários
-        if (message.Trim().Equals($"button{userNumber}", StringComparison.OrdinalIgnoreCase)) {
-            // Debounce: evitar processamento múltiplo em menos de 500ms
-            float currentTime = Time.time;
-            if (currentTime - lastButtonTime < 0.5f) {
-                Debug.Log($"🎬 BUTTON{userNumber} IGNORADO (debounce)");
-                return;
-            }
-            lastButtonTime = currentTime;
+        if (parts.Length >= 2) {
+            // Tentar extrair o ID do primeiro número
+            string idPart = parts[0];
+            int messageId = 0;
             
-            // ESP32 enviou sinal de botão pressionado (clique rápido)
-            Debug.Log($"🎬 BUTTON{userNumber} - Estado: {(isPlaying ? "PLAYING" : "STOPPED")}");
-            Debug.Log($"🎬 BUTTON{userNumber} - VideoPlayer.isPlaying: {(videoPlayer != null ? videoPlayer.isPlaying.ToString() : "null")}");
-            Debug.Log($"🎬 BUTTON{userNumber} - pausedTime: {pausedTime:F2}s");
-            
-            // CORRIGIDO: Lógica melhorada para pause/resume
-            if (videoPlayer == null) {
-                Debug.Log("🎬 VideoPlayer não encontrado - iniciando novo vídeo...");
-                PlayVideo();
-            } else if (videoPlayer.isPlaying) {
-                // Vídeo está tocando - pausar
-                Debug.Log("⏸️ PAUSANDO VÍDEO...");
-                PauseVideo();
-            } else if (!videoPlayer.isPlaying && pausedTime > 0) {
-                // Vídeo está pausado e temos tempo salvo - retomar
-                Debug.Log("▶️ RETOMANDO VÍDEO...");
-                ResumeVideo();
-            } else if (!videoPlayer.isPlaying && pausedTime == 0) {
-                // Vídeo parado completamente - iniciar novo
-                Debug.Log("🎬 INICIANDO NOVO VÍDEO...");
-                PlayVideo();
+            // Extrair número do ID (pode ser "1", "2", "3", "4")
+            if (int.TryParse(idPart, out messageId)) {
+                // Verificar se a mensagem é para este usuário
+                if (messageId == userNumber) {
+                    // Extrair idioma (segunda parte após o underscore)
+                    string language = parts[1].ToLower().Trim();
+                    
+                    Log($"🎬 Comando play recebido para User {userNumber}: idioma = {language}");
+                    
+                    // Debounce: evitar processamento múltiplo em menos de 500ms
+                    float currentTime = Time.time;
+                    if (currentTime - lastButtonTime < 0.5f) {
+                        Debug.Log($"🎬 PLAY{userNumber}_{language} IGNORADO (debounce)");
+                        return;
+                    }
+                    lastButtonTime = currentTime;
+                    
+                    // Tocar vídeo no idioma especificado
+                    PlayVideoByLanguage(language);
+                } else {
+                    // Mensagem não é para este usuário, ignorar
+                    Debug.Log($"🔇 Mensagem play{messageId}_{parts[1]} ignorada (este é User {userNumber})");
+                }
             } else {
-                // Estado inconsistente - tentar retomar
-                Debug.Log("⚠️ Estado inconsistente - tentando retomar");
-                ResumeVideo();
+                LogError($"Formato de ID inválido na mensagem: {message}");
             }
-        } 
-        else if (message.Equals($"long{userNumber}", StringComparison.OrdinalIgnoreCase)) {
-            // ESP32 enviou sinal de botão pressionado por longo tempo (2+ segundos)
-            Debug.Log($"⏹️ Botão pressionado por longo tempo - Parando vídeo...");
-            StopVideoCompletely(); // CORRIGIDO: Usar StopVideoCompletely para parar completamente
-            // Enviar vr_connected para sinalizar que está pronto novamente
-            _ = SendVRConnected(); // Fire and forget
-            // Resetar estado para aguardar novo comando
-            waitingForCommands = true;
-            waitingTimer = 0f;
-            hasAutoStarted = false;
-        } 
-        else if (message.Equals($"vr_signal_lost{userNumber}", StringComparison.OrdinalIgnoreCase)) {
-            // VR perdeu sinal - parar tudo
-            Debug.Log("📡 VR Signal Lost - Parando vídeo...");
-            StopVideo();
-            UpdateDebugText("VR Signal Lost - Conexão perdida");
-        }
-        else if (message.Equals($"vr_hibernate{userNumber}", StringComparison.OrdinalIgnoreCase)) {
-            // VR hibernado - parar tudo
-            Debug.Log("😴 VR Hibernate - Parando vídeo...");
-            StopVideo();
-            UpdateDebugText("VR Hibernate - Headset hibernado");
-        }
-        else if (message.Equals($"ready{userNumber}", StringComparison.OrdinalIgnoreCase)) {
-            // Player está pronto - LED verde deve estar aceso
-            Debug.Log($"✅ Player {userNumber} pronto - LED verde deve estar aceso");
-            UpdateDebugText($"Player {userNumber} pronto - LED verde aceso");
-        }
-        else if (message.StartsWith($"status{userNumber}:", StringComparison.OrdinalIgnoreCase)) {
-            // ESP32 está simulando animação - ignorar completamente
-            // O Unity deve enviar percent{userNumber}:X baseado no progresso real do vídeo
-            // Debug.Log($"📊 Status simulado ignorado: {message}");
-        } 
-        else {
-            Debug.LogWarning($"⚠️ Mensagem desconhecida: {message}");
+        } else {
+            LogError($"Formato de mensagem inválido: {message}. Esperado: play{{id}}_{{idioma}} (ex: play1_pt, play2_en)");
         }
     }
+    // MANTIDO: Comandos antigos para compatibilidade (pode ser removido depois)
+    else if (message.Trim().Equals($"button{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        // Debounce: evitar processamento múltiplo em menos de 500ms
+        float currentTime = Time.time;
+        if (currentTime - lastButtonTime < 0.5f) {
+            Debug.Log($"🎬 BUTTON{userNumber} IGNORADO (debounce)");
+            return;
+        }
+        lastButtonTime = currentTime;
+        
+        // Comando antigo - usar primeiro vídeo disponível
+        LogWarning("⚠️ Usando comando antigo 'button'. Use 'play{id}_{idioma}' no futuro.");
+        if (videoPlayer == null) {
+            Debug.Log("🎬 VideoPlayer não encontrado - iniciando novo vídeo...");
+            PlayVideo();
+        } else if (videoPlayer.isPlaying) {
+            Debug.Log("⏸️ PAUSANDO VÍDEO...");
+            PauseVideo();
+        } else if (!videoPlayer.isPlaying && pausedTime > 0) {
+            Debug.Log("▶️ RETOMANDO VÍDEO...");
+            ResumeVideo();
+        } else {
+            Debug.Log("🎬 INICIANDO NOVO VÍDEO...");
+            PlayVideo();
+        }
+    } 
+    else if (message.Equals($"long{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        // ESP32 enviou sinal de botão pressionado por longo tempo (2+ segundos)
+        Debug.Log($"⏹️ Botão pressionado por longo tempo - Parando vídeo...");
+        StopVideoCompletely();
+        _ = SendVRConnected(); // Fire and forget
+        waitingForCommands = true;
+        waitingTimer = 0f;
+        hasAutoStarted = false;
+    } 
+    else if (message.Equals($"vr_signal_lost{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        // VR perdeu sinal - parar tudo
+        Debug.Log("📡 VR Signal Lost - Parando vídeo...");
+        StopVideo();
+        UpdateDebugText("VR Signal Lost - Conexão perdida");
+    }
+    else if (message.Equals($"vr_hibernate{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        // VR hibernado - parar tudo
+        Debug.Log("😴 VR Hibernate - Parando vídeo...");
+        StopVideo();
+        UpdateDebugText("VR Hibernate - Headset hibernado");
+    }
+    else if (message.Equals($"ready{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        // Player está pronto - LED verde deve estar aceso
+        Debug.Log($"✅ Player {userNumber} pronto - LED verde deve estar aceso");
+        UpdateDebugText($"Player {userNumber} pronto - LED verde aceso");
+    }
+    else if (message.StartsWith($"status{userNumber}:", StringComparison.OrdinalIgnoreCase)) {
+        // ESP32 está simulando animação - ignorar completamente
+        // O Unity deve enviar percent{userNumber}:X baseado no progresso real do vídeo
+    } 
+    else {
+        Debug.LogWarning($"⚠️ Mensagem desconhecida: {message}");
+    }
+}
 
     void ShowTemporaryMessage(string message) {
         if (messageText != null) {
@@ -1275,6 +1656,90 @@ void ProcessReceivedMessage(string message) {
         }
     }
 
+    // Métodos do menu de configuração
+    void ShowConfigMenu() {
+        Log("📋 Tentando abrir menu de configuração...");
+        
+        if (configMenuUI != null) {
+            configMenuUI.SetActive(true);
+            isConfigMenuOpen = true;
+            
+            Log($"✅ Menu de configuração ativado: {configMenuUI.name}");
+            
+            // Preencher campo de input com IP atual (sem ws:// e porta)
+            if (ipInputField != null) {
+                string currentIP = serverUri;
+                // Remover ws:// ou wss://
+                if (currentIP.StartsWith("ws://")) {
+                    currentIP = currentIP.Substring(5);
+                } else if (currentIP.StartsWith("wss://")) {
+                    currentIP = currentIP.Substring(6);
+                }
+                // Remover porta se existir
+                int portIndex = currentIP.LastIndexOf(':');
+                if (portIndex > 0) {
+                    currentIP = currentIP.Substring(0, portIndex);
+                }
+                ipInputField.text = currentIP;
+                Log($"✅ Campo de input preenchido com IP: {currentIP}");
+            } else {
+                LogWarning("⚠️ ipInputField não configurado no Inspector!");
+            }
+            
+            // Configurar botões
+            if (saveIpButton != null) {
+                saveIpButton.onClick.RemoveAllListeners();
+                saveIpButton.onClick.AddListener(OnSaveIPButtonClicked);
+                Log("✅ Botão Salvar configurado");
+            } else {
+                LogWarning("⚠️ saveIpButton não configurado no Inspector!");
+            }
+            
+            if (closeConfigButton != null) {
+                closeConfigButton.onClick.RemoveAllListeners();
+                closeConfigButton.onClick.AddListener(HideConfigMenu);
+                Log("✅ Botão Fechar configurado");
+            } else {
+                LogWarning("⚠️ closeConfigButton não configurado no Inspector!");
+            }
+            
+            Log("📋 Menu de configuração aberto com sucesso");
+            UpdateDebugText("Menu de configuração aberto");
+        } else {
+            LogError("❌ Menu de configuração não configurado! Configure configMenuUI no Inspector do VRManager.");
+            UpdateDebugText("ERRO: Menu de configuração não configurado no Inspector!");
+        }
+    }
+    
+    void HideConfigMenu() {
+        if (configMenuUI != null) {
+            configMenuUI.SetActive(false);
+            isConfigMenuOpen = false;
+            Log("📋 Menu de configuração fechado");
+        }
+    }
+    
+    void ToggleConfigMenu() {
+        if (isConfigMenuOpen) {
+            HideConfigMenu();
+        } else {
+            ShowConfigMenu();
+        }
+    }
+    
+    void OnSaveIPButtonClicked() {
+        if (ipInputField != null) {
+            string ip = ipInputField.text;
+            if (!string.IsNullOrEmpty(ip)) {
+                SaveServerIP(ip);
+                HideConfigMenu();
+            } else {
+                LogError("IP não pode ser vazio!");
+                UpdateDebugText("Erro: IP não pode ser vazio!");
+            }
+        }
+    }
+    
     // Método para forçar a solicitação de permissão de armazenamento no Android
     void ForceRequestStoragePermission() {
         #if UNITY_ANDROID && !UNITY_EDITOR
