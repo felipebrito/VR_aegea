@@ -75,6 +75,7 @@ public class VRManager : MonoBehaviour {
 
     [Header("User Settings")]
     [Tooltip("Identifica se esta build é do usuário 1, 2, 3 ou 4 (afeta as mensagens enviadas)")]
+    [Range(1, 4)] // Força o Inspector a aceitar apenas valores entre 1 e 4
     public int userNumber = 1; // 1, 2, 3 ou 4
     
     [Header("Language Settings")]
@@ -122,6 +123,18 @@ public class VRManager : MonoBehaviour {
     private string savedServerIP = "";
 
     void Awake() {
+        // Validar userNumber ANTES de qualquer inicialização
+        if (userNumber < 1 || userNumber > 4) {
+            Debug.LogError($"❌ [Awake] userNumber INVÁLIDO ({userNumber})! Deve ser entre 1 e 4. Corrigindo para 1.");
+            userNumber = 1;
+        }
+        
+        // Garantir que está no range válido
+        userNumber = Mathf.Clamp(userNumber, 1, 4);
+        
+        // Log claro do ID da build para facilitar debug
+        Debug.Log($"🔷🔷🔷 VRManager Awake - Build ID: {userNumber} 🔷🔷🔷");
+        
         #if UNITY_ANDROID && !UNITY_EDITOR
         Debug.Log("⚠️ SOLICITANDO PERMISSÕES NO AWAKE...");
         
@@ -133,14 +146,18 @@ public class VRManager : MonoBehaviour {
     async void Start() {
         videoPlayer.Prepare();
         try {
-            Debug.Log("✅ Cliente VR iniciando...");
+            Debug.Log($"✅ Cliente VR iniciando... [BUILD ID: {userNumber}]");
             
-            // Validar userNumber
+            // Validar userNumber (validação redundante para garantir)
             if (userNumber < 1 || userNumber > 4) {
                 LogWarning($"userNumber inválido ({userNumber}). Definindo como 1.");
                 userNumber = 1;
             }
-            Log($"🎮 Configurado como Usuário {userNumber}");
+            
+            // Garantir que está no range válido
+            userNumber = Mathf.Clamp(userNumber, 1, 4);
+            
+            Log($"🎮 Configurado como Usuário {userNumber} [BUILD ID CONFIRMADO]");
             
             // Inicializar mapeamento de idiomas
             InitializeVideoLanguageMap();
@@ -460,43 +477,67 @@ public class VRManager : MonoBehaviour {
 
     void Update() {
         try {
+            // Verificar se objeto ainda está válido
+            if (this == null || !this.isActiveAndEnabled) return;
+            
             // Controles para teste no editor
             #if UNITY_EDITOR
-            HandleEditorControls();
+            try {
+                HandleEditorControls();
+            } catch (Exception editorEx) {
+                Debug.LogError($"❌ [User {userNumber}] Erro em HandleEditorControls: {editorEx.Message}");
+            }
             #endif
 
             // Detectar botão do controle Quest para abrir menu de configuração
             #if UNITY_ANDROID && !UNITY_EDITOR
-            // Usar OVRInput para detectar botão do controle Quest
-            // Botões: One (A) e Two (B) do controle direito
-            if (OVRInput.GetDown(OVRInput.Button.One) ||      // Botão A (controle direito)
-                OVRInput.GetDown(OVRInput.Button.Two)) {      // Botão B (controle direito)
-                Log("🎮 Botão do controle pressionado - abrindo menu de configuração");
-                ToggleConfigMenu();
+            try {
+                // Usar OVRInput para detectar botão do controle Quest
+                // Botões: One (A) e Two (B) do controle direito
+                if (OVRInput.GetDown(OVRInput.Button.One) ||      // Botão A (controle direito)
+                    OVRInput.GetDown(OVRInput.Button.Two)) {      // Botão B (controle direito)
+                    Log($"🎮 [User {userNumber}] Botão do controle pressionado - abrindo menu de configuração");
+                    ToggleConfigMenu();
+                }
+            } catch (Exception oculusEx) {
+                // OVRInput pode falhar se SDK não estiver inicializado
+                if (diagnosticMode) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao acessar OVRInput: {oculusEx.Message}");
+                }
             }
             #endif
             
             // Atalho de teclado no editor para testar menu
             #if UNITY_EDITOR
-            // Tecla A para testar menu (mesmo que o botão A do Quest)
-            if (Input.GetKeyDown(KeyCode.A)) {
-                Log("⌨️ Tecla A pressionada - abrindo menu de configuração (Editor)");
-                ToggleConfigMenu();
-            }
-            // Tecla M também funciona (mantido para compatibilidade)
-            if (Input.GetKeyDown(KeyCode.M)) {
-                Log("⌨️ Tecla M pressionada - abrindo menu de configuração (Editor)");
-                ToggleConfigMenu();
+            try {
+                // Tecla A para testar menu (mesmo que o botão A do Quest)
+                if (Input.GetKeyDown(KeyCode.A)) {
+                    Log($"⌨️ [User {userNumber}] Tecla A pressionada - abrindo menu de configuração (Editor)");
+                    ToggleConfigMenu();
+                }
+                // Tecla M também funciona (mantido para compatibilidade)
+                if (Input.GetKeyDown(KeyCode.M)) {
+                    Log($"⌨️ [User {userNumber}] Tecla M pressionada - abrindo menu de configuração (Editor)");
+                    ToggleConfigMenu();
+                }
+            } catch (Exception inputEx) {
+                Debug.LogError($"❌ [User {userNumber}] Erro ao processar input: {inputEx.Message}");
             }
             #endif
 
             // Verificar timeout para mostrar diagnóstico se estiver aguardando muito tempo
-            if (waitingForCommands) {
-                waitingTimer += Time.deltaTime;
+            try {
+                if (waitingForCommands) {
+                    waitingTimer += Time.deltaTime;
+                }
+            } catch (Exception timerEx) {
+                Debug.LogError($"❌ [User {userNumber}] Erro no timer: {timerEx.Message}");
             }
         }
         catch (Exception e) {
-            LogError("Erro no Update: " + e.Message);
+            Debug.LogError($"❌ [User {userNumber}] ERRO CRÍTICO no Update: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] StackTrace: {e.StackTrace}");
+            // Não propaga a exceção para evitar crash
         }
     }
 
@@ -849,6 +890,30 @@ public class VRManager : MonoBehaviour {
         InvokeRepeating(nameof(SendTimecode), 0.5f, 1f);
     }
     
+    // Método para reiniciar vídeo após delay
+    private System.Collections.IEnumerator RestartVideoAfterDelay(float delay) {
+        yield return new WaitForSeconds(delay);
+        if (videoPlayer != null && !string.IsNullOrEmpty(currentVideo)) {
+            Debug.Log($"🔄 Reiniciando vídeo: {currentVideo}");
+            string language = GetLanguageFromVideoName(currentVideo);
+            PlayVideoByLanguage(language);
+        } else {
+            Debug.LogWarning("⚠️ Não é possível reiniciar - vídeo não encontrado");
+        }
+    }
+    
+    // Método auxiliar para obter idioma do nome do vídeo
+    private string GetLanguageFromVideoName(string videoName) {
+        if (videoName.Contains("Portugues") || videoName.Contains("Português") || videoName.Contains("_pt")) {
+            return "pt";
+        } else if (videoName.Contains("English") || videoName.Contains("Ingles") || videoName.Contains("_en")) {
+            return "en";
+        } else if (videoName.Contains("Espanhol") || videoName.Contains("Español") || videoName.Contains("_es")) {
+            return "es";
+        }
+        return "pt"; // Default
+    }
+    
     // Método para parar o vídeo
     public void StopVideo() {
         if (videoPlayer != null) {
@@ -874,19 +939,39 @@ public class VRManager : MonoBehaviour {
     
     // Método para parar o vídeo completamente
     public void StopVideoCompletely() {
-        Debug.Log("🎬 Parando vídeo completamente");
+        Debug.Log("⏹️⏹️⏹️ StopVideoCompletely() CHAMADO - Parando vídeo completamente");
         
         // Parar o vídeo
-        StopVideo();
+        if (videoPlayer != null) {
+            Debug.Log($"⏹️ VideoPlayer não é null - chamando Stop()");
+            videoPlayer.Stop();
+            isPlaying = false;
+            Debug.Log($"⏹️ Vídeo parado - isPlaying = {isPlaying}");
+        } else {
+            Debug.LogWarning("⚠️ VideoPlayer é null - não é possível parar");
+        }
         
         // CORRIGIDO: Resetar o tempo de pausa quando parar completamente
         pausedTime = 0.0;
-        
+        Debug.Log($"⏹️ Tempo de pausa resetado: {pausedTime}");
         
         // Resetar estado para aguardar novo comando
         waitingForCommands = true;
         waitingTimer = 0f;
         hasAutoStarted = false;
+        Debug.Log($"⏹️ Estado resetado: waitingForCommands={waitingForCommands}, hasAutoStarted={hasAutoStarted}");
+        
+        // Parar de enviar timecodes
+        CancelInvoke(nameof(SendTimecode));
+        Debug.Log("⏹️ Cancelado envio de timecodes");
+        
+        // Atualizar a UI
+        if (messageText != null) {
+            messageText.text = "Vídeo parado - Aguardando comandos";
+            Debug.Log("⏹️ UI atualizada");
+        }
+        
+        Debug.Log("⏹️⏹️⏹️ StopVideoCompletely() CONCLUÍDO");
     }
 
     // Novo método para controles de simulação no editor
@@ -984,44 +1069,65 @@ public class VRManager : MonoBehaviour {
     }
 
     async void ReconnectWebSocket() {
-        if (isReconnecting) return;
-        
-        isReconnecting = true;
-        
-        if (reconnectAttempts >= maxReconnectAttempts) {
-            Debug.LogError($"❌ Excedido número máximo de tentativas de reconexão ({maxReconnectAttempts})");
-            UpdateDebugText("Falha na reconexão. Tente reiniciar o aplicativo.");
-            isReconnecting = false;
-            return;
-        }
-        
-        reconnectAttempts++;
-        
-        // Fecha a conexão anterior se ainda existir
-        if (webSocket != null) {
-            try {
-                // Tenta fechar a conexão de forma limpa
-                if (webSocket.State == WebSocketState.Open) {
-                    CancellationTokenSource cts = new CancellationTokenSource(1000); // Timeout de 1 segundo
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", cts.Token);
-                }
-                webSocket.Dispose();
-            } catch (Exception e) {
-                Debug.LogWarning($"⚠️ Erro ao fechar websocket: {e.Message}");
+        try {
+            if (isReconnecting) return;
+            
+            if (this == null || !this.isActiveAndEnabled) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] Objeto destruído ou desabilitado - cancelando reconexão");
+                return;
             }
+            
+            isReconnecting = true;
+            
+            if (reconnectAttempts >= maxReconnectAttempts) {
+                Debug.LogError($"❌ [User {userNumber}] Excedido número máximo de tentativas de reconexão ({maxReconnectAttempts})");
+                UpdateDebugText("Falha na reconexão. Tente reiniciar o aplicativo.");
+                isReconnecting = false;
+                return;
+            }
+            
+            reconnectAttempts++;
+            
+            // Fecha a conexão anterior se ainda existir
+            if (webSocket != null) {
+                try {
+                    // Tenta fechar a conexão de forma limpa
+                    if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived) {
+                        CancellationTokenSource cts = new CancellationTokenSource(1000); // Timeout de 1 segundo
+                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", cts.Token);
+                    }
+                    webSocket.Dispose();
+                } catch (Exception e) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fechar websocket: {e.Message}");
+                } finally {
+                    webSocket = null; // Garantir que seja null após dispose
+                }
+            }
+            
+            Debug.Log($"🔄 [User {userNumber}] Tentativa de reconexão {reconnectAttempts}/{maxReconnectAttempts}...");
+            UpdateDebugText($"Reconectando... Tentativa {reconnectAttempts}/{maxReconnectAttempts}");
+            
+            // Aguarda um tempo com base no número de tentativas (backoff exponencial)
+            float waitTime = Mathf.Min(1 * Mathf.Pow(1.5f, reconnectAttempts - 1), 10);
+            await Task.Delay((int)(waitTime * 1000));
+            
+            // Verificar novamente se objeto ainda existe antes de conectar
+            if (this == null || !this.isActiveAndEnabled) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] Objeto destruído durante espera - cancelando reconexão");
+                isReconnecting = false;
+                return;
+            }
+            
+            // Tenta conectar novamente
+            await ConnectWebSocket();
+            
+            isReconnecting = false;
+        } catch (Exception ex) {
+            Debug.LogError($"❌ [User {userNumber}] ERRO CRÍTICO em ReconnectWebSocket: {ex.Message}");
+            Debug.LogError($"❌ [User {userNumber}] StackTrace: {ex.StackTrace}");
+            isReconnecting = false;
+            // Não propaga a exceção para evitar crash
         }
-        
-        Debug.Log($"🔄 Tentativa de reconexão {reconnectAttempts}/{maxReconnectAttempts}...");
-        UpdateDebugText($"Reconectando... Tentativa {reconnectAttempts}/{maxReconnectAttempts}");
-        
-        // Aguarda um tempo com base no número de tentativas (backoff exponencial)
-        float waitTime = Mathf.Min(1 * Mathf.Pow(1.5f, reconnectAttempts - 1), 10);
-        await Task.Delay((int)(waitTime * 1000));
-        
-        // Tenta conectar novamente
-        await ConnectWebSocket();
-        
-        isReconnecting = false;
     }
 
     async Task ConnectWebSocket() {
@@ -1042,6 +1148,12 @@ public class VRManager : MonoBehaviour {
                 
                 // Enviar vr_connected para indicar que está pronto
                 await SendVRConnected();
+                
+                // Enviar status inicial da bateria
+                await SendBatteryStatus();
+                
+                // Iniciar envio periódico de status da bateria (a cada 30 segundos)
+                InvokeRepeating(nameof(SendBatteryStatusPeriodic), 30f, 30f);
                 
                 // Conexão bem-sucedida, reseta contador de tentativas
                 reconnectAttempts = 0;
@@ -1080,39 +1192,62 @@ public class VRManager : MonoBehaviour {
     }
 
     async void ReceiveMessages() {
-        byte[] buffer = new byte[1024];
+        try {
+            byte[] buffer = new byte[1024];
 
-        while (webSocket != null && webSocket.State == WebSocketState.Open) {
-            try {
-                WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                
-                if (result.MessageType == WebSocketMessageType.Close) {
-                    Debug.LogWarning("🔌 Servidor solicitou fechamento da conexão");
+            while (this != null && this.isActiveAndEnabled && webSocket != null && webSocket.State == WebSocketState.Open) {
+                try {
+                    WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    
+                    if (result.MessageType == WebSocketMessageType.Close) {
+                        Debug.LogWarning($"🔌 [User {userNumber}] Servidor solicitou fechamento da conexão");
+                        break;
+                    }
+                    
+                    string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    
+                    // Ignora mensagens de ping
+                    if (message.StartsWith("PING:")) continue;
+                    
+                    Debug.Log($"🔵 [User {userNumber}] Mensagem recebida do Admin: {message}");
+                    
+                    // Processar mensagem com proteção adicional
+                    try {
+                        ProcessReceivedMessage(message);
+                    } catch (Exception processEx) {
+                        Debug.LogError($"❌ [User {userNumber}] Erro ao processar mensagem '{message}': {processEx.Message}");
+                        Debug.LogError($"❌ [User {userNumber}] StackTrace: {processEx.StackTrace}");
+                        // Continua o loop mesmo se processar mensagem falhar
+                    }
+                } catch (OperationCanceledException) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Operação cancelada ao receber mensagem");
+                    break;
+                } catch (WebSocketException wsEx) {
+                    Debug.LogError($"❌ [User {userNumber}] Erro WebSocket ao receber mensagem: {wsEx.Message}");
+                    Debug.LogError($"❌ [User {userNumber}] WebSocketError: {wsEx.WebSocketErrorCode}");
+                    break;
+                } catch (Exception e) {
+                    if (webSocket == null || this == null || !this.isActiveAndEnabled) break;
+                    
+                    Debug.LogError($"❌ [User {userNumber}] Erro ao receber mensagem: {e.Message}");
+                    Debug.LogError($"❌ [User {userNumber}] Tipo: {e.GetType().Name}");
+                    Debug.LogError($"❌ [User {userNumber}] StackTrace: {e.StackTrace}");
                     break;
                 }
-                
-                string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                
-                // Ignora mensagens de ping
-                if (message.StartsWith("PING:")) continue;
-                
-                Debug.Log($"🔵 Mensagem recebida do Admin: {message}");
-                ProcessReceivedMessage(message);
-            } catch (Exception e) {
-                if (webSocket == null) break;
-                
-                Debug.LogError($"❌ Erro ao receber mensagem: {e.Message}");
-                break;
             }
-        }
 
-        Debug.LogWarning("🚨 Loop de recebimento de mensagens encerrado!");
-        
-        // Só tenta reconectar se não estiver em processo de reconexão e o objeto ainda existir
-        if (!isReconnecting && webSocket != null && this != null && !this.isActiveAndEnabled) {
-            Debug.Log("🔄 Agendando reconexão após falha no recebimento de mensagens");
-            // Usar um coroutine em vez de Invoke para evitar problemas de referência
-            StartCoroutine(ReconnectAfterDelay(2f));
+            Debug.LogWarning($"🚨 [User {userNumber}] Loop de recebimento de mensagens encerrado!");
+            
+            // Só tenta reconectar se não estiver em processo de reconexão e o objeto ainda existir
+            if (this != null && this.isActiveAndEnabled && !isReconnecting && webSocket != null) {
+                Debug.Log($"🔄 [User {userNumber}] Agendando reconexão após falha no recebimento de mensagens");
+                // Usar um coroutine em vez de Invoke para evitar problemas de referência
+                StartCoroutine(ReconnectAfterDelay(2f));
+            }
+        } catch (Exception ex) {
+            Debug.LogError($"❌ [User {userNumber}] ERRO CRÍTICO em ReceiveMessages: {ex.Message}");
+            Debug.LogError($"❌ [User {userNumber}] StackTrace: {ex.StackTrace}");
+            // Não propaga a exceção para evitar crash
         }
     }
     
@@ -1125,14 +1260,91 @@ public class VRManager : MonoBehaviour {
     }
 
 void ProcessReceivedMessage(string message) {
-    Debug.Log($"📩 Mensagem recebida do Admin: {message}");
+    try {
+        // Validar mensagem não nula ou vazia
+        if (string.IsNullOrEmpty(message)) {
+            Debug.LogWarning($"⚠️ [User {userNumber}] Mensagem vazia ou nula recebida - ignorando");
+            return;
+        }
+        
+        Debug.Log($"📩 Mensagem recebida do Admin: {message} [User {userNumber}]");
+        
+        message = message.Trim(); // ✅ remove espaços e quebras de linha
+        
+        // Validar novamente após trim
+        if (string.IsNullOrEmpty(message)) {
+            Debug.LogWarning($"⚠️ [User {userNumber}] Mensagem vazia após trim - ignorando");
+            return;
+        }
+        
+        if (diagnosticMode) {
+            Debug.Log($"[DEBUG] Mensagem limpa: '{message}' (userNumber={userNumber})");
+            Debug.Log($"[DEBUG] Comparando com 'stop{userNumber}': '{message}' == 'stop{userNumber}' = {message.Equals($"stop{userNumber}", StringComparison.OrdinalIgnoreCase)}");
+        }
+        
+        // Resetar o timer quando recebe qualquer mensagem válida
+        waitingForCommands = false;
+        waitingTimer = 0f;
     
-    message = message.Trim(); // ✅ remove espaços e quebras de linha
-    Debug.Log($"[DEBUG] Mensagem limpa: '{message}' (userNumber={userNumber})");
+    // Processar solicitação de status da bateria: get_battery{id}
+    if (message.Equals($"get_battery{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        Debug.Log($"🔋 Processando comando get_battery{userNumber}");
+        _ = SendBatteryStatus(); // Fire and forget
+        return;
+    }
     
-    // Resetar o timer quando recebe qualquer mensagem
-    waitingForCommands = false;
-    waitingTimer = 0f;
+    // Processar comando stop: stop{id}
+    if (message.Equals($"stop{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        // ESP32 enviou comando stop - parar vídeo e reiniciar estado
+        Debug.Log($"⏹️⏹️⏹️ COMANDO STOP RECEBIDO - Parando vídeo e reiniciando estado...");
+        Debug.Log($"⏹️ Chamando StopVideoCompletely()...");
+        StopVideoCompletely();
+        Debug.Log($"⏹️ Reenviando mensagem de conexão...");
+        _ = SendVRConnected(); // Fire and forget - reenviar mensagem de conexão
+        waitingForCommands = true;
+        waitingTimer = 0f;
+        hasAutoStarted = false;
+        Debug.Log($"⏹️ Estado resetado - aguardando novos comandos");
+        return;
+    }
+    
+    // Processar comando pause: pause{id}
+    if (message.Equals($"pause{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        Debug.Log($"⏸️⏸️⏸️ COMANDO PAUSE RECEBIDO - Pausando vídeo...");
+        if (videoPlayer != null && videoPlayer.isPlaying) {
+            PauseVideo();
+        } else {
+            Debug.LogWarning("⚠️ Vídeo não está tocando - não é possível pausar");
+        }
+        return;
+    }
+    
+    // Processar comando resume: resume{id}
+    if (message.Equals($"resume{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        Debug.Log($"▶️▶️▶️ COMANDO RESUME RECEBIDO - Retomando vídeo...");
+        if (videoPlayer != null && !videoPlayer.isPlaying && pausedTime > 0) {
+            ResumeVideo();
+        } else if (videoPlayer != null && !videoPlayer.isPlaying) {
+            Debug.LogWarning("⚠️ Vídeo não foi pausado - iniciando novo vídeo...");
+            PlayVideo();
+        } else {
+            Debug.LogWarning("⚠️ VideoPlayer não encontrado ou vídeo já está tocando");
+        }
+        return;
+    }
+    
+    // Processar comando restart: restart{id}
+    if (message.Equals($"restart{userNumber}", StringComparison.OrdinalIgnoreCase)) {
+        Debug.Log($"🔄🔄🔄 COMANDO RESTART RECEBIDO - Reiniciando vídeo...");
+        if (videoPlayer != null) {
+            StopVideoCompletely();
+            // Aguardar um frame antes de reiniciar
+            StartCoroutine(RestartVideoAfterDelay(0.1f));
+        } else {
+            Debug.LogWarning("⚠️ VideoPlayer não encontrado - não é possível reiniciar");
+        }
+        return;
+    }
     
     // NOVO FORMATO: play{id}_{idioma} (ex: play1_pt, play2_en, play3_es)
     if (message.StartsWith("play", StringComparison.OrdinalIgnoreCase)) {
@@ -1147,12 +1359,30 @@ void ProcessReceivedMessage(string message) {
             
             // Extrair número do ID (pode ser "1", "2", "3", "4")
             if (int.TryParse(idPart, out messageId)) {
+                // Validar que o ID está no range válido
+                if (messageId < 1 || messageId > 4) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] ID de mensagem inválido: {messageId} (deve ser 1-4)");
+                    return;
+                }
+                
                 // Verificar se a mensagem é para este usuário
                 if (messageId == userNumber) {
                     // Extrair idioma (segunda parte após o underscore)
                     string language = parts[1].ToLower().Trim();
                     
-                    Log($"🎬 Comando play recebido para User {userNumber}: idioma = {language}");
+                    // Validar idioma
+                    if (string.IsNullOrEmpty(language)) {
+                        Debug.LogWarning($"⚠️ [User {userNumber}] Idioma vazio na mensagem play");
+                        return;
+                    }
+                    
+                    // Verificar se o idioma existe no mapeamento
+                    if (!videoLanguageMap.ContainsKey(language)) {
+                        Debug.LogWarning($"⚠️ [User {userNumber}] Idioma não suportado: {language}. Idiomas disponíveis: {string.Join(", ", videoLanguageMap.Keys)}");
+                        return;
+                    }
+                    
+                    Log($"🎬 [User {userNumber}] Comando play recebido: idioma = {language}");
                     
                     // Debounce: evitar processamento múltiplo em menos de 500ms
                     float currentTime = Time.time;
@@ -1162,8 +1392,18 @@ void ProcessReceivedMessage(string message) {
                     }
                     lastButtonTime = currentTime;
                     
+                    // Comportamento inteligente: se vídeo está tocando, pausar; se está pausado, retomar; senão, tocar
+                    if (videoPlayer != null && videoPlayer.isPlaying) {
+                        Debug.Log("⏸️ Vídeo está tocando - pausando...");
+                        PauseVideo();
+                    } else if (videoPlayer != null && !videoPlayer.isPlaying && pausedTime > 0) {
+                        Debug.Log("▶️ Vídeo está pausado - retomando...");
+                        ResumeVideo();
+                    } else {
+                        Debug.Log("🎬 Iniciando novo vídeo no idioma especificado...");
                     // Tocar vídeo no idioma especificado
                     PlayVideoByLanguage(language);
+                    }
                 } else {
                     // Mensagem não é para este usuário, ignorar
                     Debug.Log($"🔇 Mensagem play{messageId}_{parts[1]} ignorada (este é User {userNumber})");
@@ -1232,7 +1472,13 @@ void ProcessReceivedMessage(string message) {
         // O Unity deve enviar percent{userNumber}:X baseado no progresso real do vídeo
     } 
     else {
-        Debug.LogWarning($"⚠️ Mensagem desconhecida: {message}");
+        Debug.LogWarning($"⚠️ [User {userNumber}] Mensagem desconhecida: {message}");
+    }
+    } catch (Exception ex) {
+        Debug.LogError($"❌ [User {userNumber}] ERRO CRÍTICO em ProcessReceivedMessage: {ex.Message}");
+        Debug.LogError($"❌ [User {userNumber}] Mensagem que causou erro: '{message}'");
+        Debug.LogError($"❌ [User {userNumber}] StackTrace: {ex.StackTrace}");
+        // Não propaga a exceção para evitar crash
     }
 }
 
@@ -1319,9 +1565,17 @@ void ProcessReceivedMessage(string message) {
             string message = $"percent{userNumber}:" + percent.ToString();
             
             if (webSocket != null && webSocket.State == WebSocketState.Open) {
-                byte[] data = Encoding.UTF8.GetBytes(message);
-                webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
-                Debug.Log($"🎯 PERCENTUAL USER {userNumber}: {message} (tempo: {currentTime:F1}s / {videoDuration:F1}s)");
+                try {
+                    byte[] data = Encoding.UTF8.GetBytes(message);
+                    webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
+                    if (diagnosticMode) {
+                        Debug.Log($"🎯 [User {userNumber}] PERCENTUAL: {message} (tempo: {currentTime:F1}s / {videoDuration:F1}s)");
+                    }
+                } catch (Exception e) {
+                    Debug.LogError($"❌ [User {userNumber}] Erro ao enviar percentual: {e.Message}");
+                }
+            } else if (diagnosticMode) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket não disponível para enviar percentual (Estado: {webSocket?.State})");
             }
         }
     }
@@ -1329,28 +1583,117 @@ void ProcessReceivedMessage(string message) {
     // Enviar mensagem de VR conectado
     async Task SendVRConnected() {
         try {
-            if (webSocket != null && webSocket.State == WebSocketState.Open) {
-                string message = $"vr_connected{userNumber}";
-                byte[] data = Encoding.UTF8.GetBytes(message);
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
-                Debug.Log($"✅ Enviando: {message}");
+            if (webSocket == null) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket é null - não é possível enviar vr_connected");
+                return;
             }
+            
+            if (webSocket.State != WebSocketState.Open) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket não está aberto (Estado: {webSocket.State}) - não é possível enviar vr_connected");
+                return;
+            }
+            
+            string message = $"vr_connected{userNumber}";
+            byte[] data = Encoding.UTF8.GetBytes(message);
+            await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
+            Debug.Log($"✅ [User {userNumber}] Enviando: {message}");
         } catch (Exception e) {
-            Debug.LogError($"❌ Erro ao enviar vr_connected{userNumber}: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] Erro ao enviar vr_connected: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] StackTrace: {e.StackTrace}");
         }
     }
     
     // Enviar mensagem de vídeo terminado
     async Task SendVideoEnded() {
         try {
-            if (webSocket != null && webSocket.State == WebSocketState.Open) {
-                string message = $"video_ended{userNumber}";
-                byte[] data = Encoding.UTF8.GetBytes(message);
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
-                Debug.Log($"🎬 Enviando: {message}");
+            if (webSocket == null) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket é null - não é possível enviar video_ended");
+                return;
+            }
+            
+            if (webSocket.State != WebSocketState.Open) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket não está aberto (Estado: {webSocket.State}) - não é possível enviar video_ended");
+                return;
+            }
+            
+            string message = $"video_ended{userNumber}";
+            byte[] data = Encoding.UTF8.GetBytes(message);
+            await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
+            Debug.Log($"🎬 [User {userNumber}] Enviando: {message}");
+        } catch (Exception e) {
+            Debug.LogError($"❌ [User {userNumber}] Erro ao enviar video_ended: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] StackTrace: {e.StackTrace}");
+        }
+    }
+
+    // Obter nível da bateria do Oculus
+    float GetBatteryLevel() {
+        #if UNITY_ANDROID && !UNITY_EDITOR && USING_OCULUS_SDK
+        try {
+            // Usar OVRPlugin para obter nível da bateria
+            // OVRPlugin.GetSystemBatteryLevel() retorna valor entre 0.0 e 1.0
+            float batteryLevel = OVRPlugin.GetSystemBatteryLevel();
+            // Converter para percentual (0-100)
+            return batteryLevel * 100f;
+        } catch (Exception e) {
+            LogError($"Erro ao obter nível da bateria: {e.Message}");
+            // Tentar método alternativo via Android API
+            return GetBatteryLevelAndroid();
+        }
+        #else
+        // No editor ou sem SDK do Oculus, retornar valor simulado
+        return 100f;
+        #endif
+    }
+    
+    // Método alternativo para obter bateria via Android API
+    float GetBatteryLevelAndroid() {
+        #if UNITY_ANDROID && !UNITY_EDITOR
+        try {
+            using (AndroidJavaClass unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (AndroidJavaObject activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+            using (AndroidJavaObject intentFilter = new AndroidJavaObject("android.content.IntentFilter", "android.intent.action.BATTERY_CHANGED"))
+            using (AndroidJavaObject batteryStatus = activity.Call<AndroidJavaObject>("registerReceiver", null, intentFilter)) {
+                if (batteryStatus != null) {
+                    int level = batteryStatus.Call<int>("getIntExtra", "level", -1);
+                    int scale = batteryStatus.Call<int>("getIntExtra", "scale", -1);
+                    if (level >= 0 && scale > 0) {
+                        return (level * 100f) / scale;
+                    }
+                }
             }
         } catch (Exception e) {
-            Debug.LogError($"❌ Erro ao enviar video_ended{userNumber}: {e.Message}");
+            LogError($"Erro ao obter bateria via Android API: {e.Message}");
+        }
+        #endif
+        return 0f;
+    }
+    
+    // Enviar status da bateria
+    async Task SendBatteryStatus() {
+        try {
+            if (webSocket == null) {
+                if (diagnosticMode) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket é null - não é possível enviar status da bateria");
+                }
+                return;
+            }
+            
+            if (webSocket.State != WebSocketState.Open) {
+                if (diagnosticMode) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket não está aberto (Estado: {webSocket.State}) - não é possível enviar status da bateria");
+                }
+                return;
+            }
+            
+            float batteryLevel = GetBatteryLevel();
+            string message = $"battery{userNumber}:{batteryLevel:F1}";
+            byte[] data = Encoding.UTF8.GetBytes(message);
+            await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
+            Debug.Log($"🔋 [User {userNumber}] Enviando status da bateria: {batteryLevel:F1}%");
+        } catch (Exception e) {
+            Debug.LogError($"❌ [User {userNumber}] Erro ao enviar status da bateria: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] StackTrace: {e.StackTrace}");
         }
     }
 
@@ -1360,19 +1703,52 @@ void ProcessReceivedMessage(string message) {
 
 
 
-    void OnDestroy() {
-        // Limpa as invocações pendentes
-        CancelInvoke();
-        
-        // Fecha a conexão WebSocket de forma limpa
-        if (webSocket != null && webSocket.State == WebSocketState.Open) {
-            try {
-                // A operação é assíncrona, mas no OnDestroy não podemos aguardar
-                // Estamos apenas iniciando o processo de fechamento
-                webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Aplicativo fechado", CancellationToken.None);
-            } catch (Exception e) {
-                Debug.LogError($"❌ Erro ao fechar WebSocket: {e.Message}");
+    // Método para envio periódico de status da bateria
+    async void SendBatteryStatusPeriodic() {
+        try {
+            if (this == null || !this.isActiveAndEnabled) {
+                CancelInvoke(nameof(SendBatteryStatusPeriodic));
+                return;
             }
+            await SendBatteryStatus();
+        } catch (Exception ex) {
+            Debug.LogError($"❌ [User {userNumber}] Erro em SendBatteryStatusPeriodic: {ex.Message}");
+            // Não propaga a exceção para evitar crash
+        }
+    }
+
+    void OnDestroy() {
+        try {
+            // Limpa as invocações pendentes
+            CancelInvoke();
+            
+            // Parar envio periódico de bateria
+            CancelInvoke(nameof(SendBatteryStatusPeriodic));
+            
+            // Fecha a conexão WebSocket de forma limpa
+            if (webSocket != null) {
+                try {
+                    // A operação é assíncrona, mas no OnDestroy não podemos aguardar
+                    // Estamos apenas iniciando o processo de fechamento
+                    if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived) {
+                        webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Aplicativo fechado", CancellationToken.None);
+                    }
+                } catch (Exception e) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fechar WebSocket: {e.Message}");
+                } finally {
+                    try {
+                        webSocket.Dispose();
+                    } catch (Exception disposeEx) {
+                        Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {disposeEx.Message}");
+                    }
+                    webSocket = null;
+                }
+            }
+            
+            Debug.Log($"🔷 [User {userNumber}] VRManager destruído");
+        } catch (Exception ex) {
+            Debug.LogError($"❌ [User {userNumber}] Erro em OnDestroy: {ex.Message}");
+            // Não propaga exceção em OnDestroy para evitar crash
         }
     }
 
