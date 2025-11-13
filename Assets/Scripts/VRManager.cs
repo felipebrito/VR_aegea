@@ -998,20 +998,20 @@ public class VRManager : MonoBehaviour {
         }
     }
     
-    // Verificar periodicamente se a conexão está ativa
+    // Verificar periodicamente se a conexão está ativa (SIMPLIFICADO)
     void CheckConnection() {
+        // SOLUÇÃO SIMPLIFICADA: Confia apenas no estado do WebSocket
+        // Se WebSocket diz que está aberto, está aberto
+        // Não tenta ser mais esperto que o protocolo
         if (webSocket == null || webSocket.State != WebSocketState.Open) {
-            if (!isReconnecting) {
-                Debug.LogWarning($"🔍 [User {userNumber}] Conexão WebSocket fechada ou inválida. Tentando reconectar...");
+            if (!isReconnecting && !isShuttingDown) {
+                Debug.LogWarning($"🔍 [User {userNumber}] Conexão WebSocket fechada. Tentando reconectar...");
                 UpdateDebugText("Conexão perdida. Reconectando...");
                 ReconnectWebSocket();
             }
         } else {
             // Conexão está OK, reseta contagem de tentativas
             reconnectAttempts = 0;
-            
-            // Ping será enviado periodicamente via InvokeRepeating
-            // Não precisa chamar aqui para evitar múltiplos pings simultâneos
         }
     }
     
@@ -1047,13 +1047,8 @@ public class VRManager : MonoBehaviour {
             }
             
             if (webSocket.State != WebSocketState.Open) {
-                if (diagnosticMode) {
-                    Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket não está aberto (Estado: {webSocket.State}) - não é possível enviar ping");
-                }
-                // Tentar reconectar se ping falhar (mas não durante shutdown)
-                if (!isReconnecting && !isShuttingDown) {
-                    ReconnectWebSocket();
-                }
+                // Não tentar reconectar aqui - deixa CheckConnection() fazer isso
+                // Evita múltiplas tentativas simultâneas de reconexão
                 return;
             }
             
