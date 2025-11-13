@@ -440,6 +440,7 @@ public class OculusController : MonoBehaviour
                                 // Registrar conexão
                                 oculusConnections[id] = client;
                                 oculusConnected[id] = true;
+                                oculusLastPing[id] = DateTime.Now; // Inicializar último ping
                                 
                                 if (oculusPanels[id - 1] != null)
                                 {
