@@ -1,0 +1,97 @@
+--------- beginning of main
+11-11 00:56:02.002  5321  5321 V Unity   : Context Type: GameActivity
+11-11 00:56:02.018  5321  5422 I Unity   : UnityApplication::CreateInstance
+11-11 00:56:02.018  5321  5422 I Unity   : GameActivity Package Version '3.0.5'
+11-11 00:56:02.018  5321  5422 I Unity   : Starting Game Loop
+11-11 00:56:02.020  5321  5422 I Unity   : Handle cmd APP_CMD_START(11)
+11-11 00:56:02.024  5321  5422 I Unity   : Handle cmd APP_CMD_RESUME(12)
+11-11 00:56:02.038  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.042  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.042  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.042  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.042  5321  5422 I Unity   : Handle cmd APP_CMD_CONTENT_RECT_CHANGED(5)
+11-11 00:56:02.046  5321  5422 I Unity   : Handle cmd APP_CMD_INIT_WINDOW(1)
+11-11 00:56:02.059  5321  5422 I Unity   : MemoryManager: Using 'Dynamic Heap' Allocator.
+11-11 00:56:02.101  5321  5422 I Unity   : SystemInfo CPU = ARM64 FP ASIMD AES, Cores = 8, Memory = 11085mb
+11-11 00:56:02.101  5321  5422 I Unity   : SystemInfo ARM big.LITTLE configuration: 6 big (mask: 0xfc), 2 little (mask: 0x3)
+11-11 00:56:02.101  5321  5422 I Unity   : XR UsableCoreMask: 0xff
+11-11 00:56:02.101  5321  5422 I Unity   : ApplicationInfo 'com.aegea.br', Version '1 ', Min API Level '33', Target API Level '33'
+11-11 00:56:02.101  5321  5422 I Unity   : Built from '6000.2/respin/6000.2.8f1-e4064264ae96' branch, Version '6000.2.8f1 (c9992ac36c34)', Build type 'Release', Scripting Backend 'il2cpp', CPU 'arm64-v8a', Stripping 'Enabled'
+11-11 00:56:02.101  5321  5422 I Unity   : Device Model 'samsung SM-S928B', OS 'Android OS 16 (API 36)'
+11-11 00:56:02.215  5321  5422 I Unity   : Unity memory allocator detected: MetaXRAudio native memory allocations will be tracked.
+11-11 00:56:02.216  5321  5422 I Unity   : Company Name: Aegea
+11-11 00:56:02.216  5321  5422 I Unity   : Product Name: Aegea
+11-11 00:56:02.219  5321  5422 D Unity   : loading library OVRPlugin
+11-11 00:56:02.569  5321  5422 I Unity   : XRGeneral Settings awakening...
+11-11 00:56:02.569  5321  5422 I Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:02.569  5321  5422 I Unity   : UnityEngine.XR.Management.XRGeneralSettings:Awake()
+11-11 00:56:02.569  5321  5422 I Unity   : 
+11-11 00:56:02.572  5321  5422 E Unity   : ExecutionEngineException: Invalid call to method 'Meta.XR.ImmersiveDebugger.Manager.DebugManagerAddon`1::Init'
+11-11 00:56:02.572  5321  5422 E Unity   : 
+11-11 00:56:02.572  5321  5422 E Unity   : 
+11-11 00:56:02.572  5321  5422 E Unity   : ExecutionEngineException: Invalid call to method 'Meta.XR.ImmersiveDebugger.Manager.DebugManagerAddon`1::Init'
+11-11 00:56:02.572  5321  5422 E Unity   : 
+11-11 00:56:02.572  5321  5422 E Unity   : 
+11-11 00:56:02.583  5321  5422 E Unity   : Exiting application:
+11-11 00:56:02.583  5321  5422 E Unity   : 
+11-11 00:56:02.583  5321  5422 E Unity   : This .apk was built with the Oculus XR Plugin loader enabled, but is attempting to run on a non-Oculus device.
+11-11 00:56:02.583  5321  5422 E Unity   : To build for general Android devices, please disable the Oculus XR Plugin before building the Android player.
+11-11 00:56:02.583  5321  5422 E Unity   : 
+11-11 00:56:02.583  5321  5422 E Unity   : 
+11-11 00:56:02.583  5321  5422 E Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:02.583  5321  5422 E Unity   : Unity.XR.Oculus.OculusLoader:RuntimeLoadOVRPlugin()
+11-11 00:56:02.583  5321  5422 E Unity   : 
+11-11 00:56:02.598  5321  5422 I Unity   :     HasWindow = 1, HasFocus = 0
+11-11 00:56:02.598  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_RESIZED(3)
+11-11 00:56:02.598  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_REDRAW_NEEDED(4)
+11-11 00:56:02.598  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_GAINED_FOCUS(7)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.599  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.833  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:02.833  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:04.803  5321  5422 I Unity   : Applying Acoustic Propagation Settings: [acoustic model = Automatic], [diffraction = True], 
+11-11 00:56:04.803  5321  5422 I Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:04.803  5321  5422 I Unity   : MetaXRAcousticSettings:ApplyAllSettings()
+11-11 00:56:04.803  5321  5422 I Unity   : 
+11-11 00:56:04.818  5321  5422 I Unity   : Meta XR Audio Native Interface initialized with Unity plugin
+11-11 00:56:04.818  5321  5422 I Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:04.818  5321  5422 I Unity   : MetaXRAcousticNativeInterface:FindInterface()
+11-11 00:56:04.818  5321  5422 I Unity   : MetaXRAcousticNativeInterface:get_Interface()
+11-11 00:56:04.818  5321  5422 I Unity   : MetaXRAcousticSettings:ApplyAllSettings()
+11-11 00:56:04.818  5321  5422 I Unity   : 
+11-11 00:56:04.819  5321  5422 I Unity   : Setting spatial voice limit: 64
+11-11 00:56:04.819  5321  5422 I Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:04.819  5321  5422 I Unity   : MetaXRAudioSource:OnBeforeSceneLoadRuntimeMethod()
+11-11 00:56:04.819  5321  5422 I Unity   : 
+11-11 00:56:04.850  5321  5422 I Unity   : No Meta XR Audio Room found, setting default room
+11-11 00:56:04.850  5321  5422 I Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:04.850  5321  5422 I Unity   : MetaXRAudioRoomAcousticProperties:CheckSceneHasRoom()
+11-11 00:56:04.850  5321  5422 I Unity   : 
+11-11 00:56:04.854  5321  5422 I Unity   : Meta XR Audio Native Interface initialized with Unity plugin
+11-11 00:56:04.854  5321  5422 I Unity   : UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+11-11 00:56:04.854  5321  5422 I Unity   : MetaXRAudioNativeInterface:FindInterface()
+11-11 00:56:04.854  5321  5422 I Unity   : MetaXRAudioNativeInterface:get_Interface()
+11-11 00:56:04.854  5321  5422 I Unity   : MetaXRAudioRoomAcousticProperties:Update()
+11-11 00:56:04.854  5321  5422 I Unity   : MetaXRAudioRoomAcousticProperties:CheckSceneHasRoom()
+11-11 00:56:04.854  5321  5422 I Unity   : 
+11-11 00:56:04.862  5321  5422 I Unity   : Quit requested
+11-11 00:56:04.863  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:04.863  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:04.877  5321  5422 I Unity   : Handle cmd APP_CMD_PAUSE(14)
+11-11 00:56:04.914  5321  5422 I Unity   : Handle cmd APP_CMD_LOST_FOCUS(8)
+11-11 00:56:05.397  5321  5422 I Unity   : Handle cmd APP_CMD_TERM_WINDOW(2)
+11-11 00:56:05.554  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:05.556  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:05.556  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:05.561  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:05.561  5321  5422 I Unity   : Handle cmd APP_CMD_WINDOW_INSETS_CHANGED(17)
+11-11 00:56:05.567  5321  5422 I Unity   : Handle cmd APP_CMD_STOP(15)
+11-11 00:56:05.568  5321  5422 I Unity   : Handle cmd APP_CMD_DESTROY(16)
+11-11 00:56:05.568  5321  5422 I Unity   : UnityApplication::DestroyInstance
+11-11 00:56:05.652  5321  5422 I Unity   : Quitting process
