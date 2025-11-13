@@ -1076,6 +1076,12 @@ public class VRManager : MonoBehaviour {
     }
 
     async void ReconnectWebSocket() {
+        // Não tentar reconectar durante shutdown
+        if (isShuttingDown) {
+            Debug.Log($"🛑 [User {userNumber}] Reconexão cancelada - aplicação está fechando");
+            return;
+        }
+        
         if (isReconnecting) return;
         
         isReconnecting = true;
@@ -1097,10 +1103,15 @@ public class VRManager : MonoBehaviour {
         // Fecha a conexão anterior se ainda existir
         if (webSocket != null) {
             try {
-                // Tenta fechar a conexão de forma limpa
-                if (webSocket.State == WebSocketState.Open) {
-                    CancellationTokenSource cts = new CancellationTokenSource(1000); // Timeout de 1 segundo
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", cts.Token);
+                // Durante shutdown, usar Abort() para fechar imediatamente
+                if (isShuttingDown) {
+                    webSocket.Abort();
+                } else {
+                    // Tenta fechar a conexão de forma limpa (apenas se não estiver em shutdown)
+                    if (webSocket.State == WebSocketState.Open) {
+                        CancellationTokenSource cts = new CancellationTokenSource(1000); // Timeout de 1 segundo
+                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", cts.Token);
+                    }
                 }
                 webSocket.Dispose();
             } catch (Exception e) {
@@ -1643,15 +1654,14 @@ void ProcessReceivedMessage(string message) {
 
     // Chamado quando a aplicação está sendo fechada (antes de OnDestroy)
     void OnApplicationQuit() {
-        Debug.Log($"🛑 [User {userNumber}] OnApplicationQuit chamado - iniciando shutdown...");
+        Debug.Log($"🛑 [User {userNumber}] OnApplicationQuit chamado - iniciando shutdown imediato...");
         isShuttingDown = true;
         
-        // Criar CancellationTokenSource para cancelar operações async
+        // Criar e cancelar CancellationTokenSource imediatamente
         if (shutdownCts == null) {
             shutdownCts = new CancellationTokenSource();
-        } else {
-            shutdownCts.Cancel();
         }
+        shutdownCts.Cancel(); // Cancelar todas as operações async imediatamente
         
         // Cancelar todas as invocações pendentes
         CancelInvoke();
@@ -1659,36 +1669,32 @@ void ProcessReceivedMessage(string message) {
         // Parar todas as coroutines
         StopAllCoroutines();
         
-        // Fechar WebSocket de forma síncrona (com timeout)
+        // Fechar WebSocket de forma AGressiva e IMEDIATA (sem aguardar CloseAsync)
         if (webSocket != null) {
             try {
-                if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived) {
-                    // Tentar fechar com timeout curto
-                    CancellationTokenSource closeCts = new CancellationTokenSource(500); // 500ms timeout
-                    webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Aplicativo fechando", closeCts.Token)
-                        .ContinueWith(task => {
-                            try {
-                                if (webSocket != null) {
-                                    webSocket.Dispose();
-                                }
-                            } catch (Exception e) {
-                                Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {e.Message}");
-                            }
-                        });
-                } else {
-                    webSocket.Dispose();
-                }
+                // Não tentar fechar graciosamente - apenas fazer dispose imediato
+                // Durante shutdown, o importante é liberar recursos rapidamente
+                webSocket.Abort(); // Abortar conexão imediatamente (mais rápido que CloseAsync)
             } catch (Exception e) {
-                Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fechar WebSocket no OnApplicationQuit: {e.Message}");
+                Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao abortar WebSocket: {e.Message}");
+            } finally {
                 try {
-                    if (webSocket != null) {
-                        webSocket.Dispose();
-                    }
+                    webSocket.Dispose(); // Dispose imediato
                 } catch (Exception disposeEx) {
                     Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {disposeEx.Message}");
                 }
+                webSocket = null;
             }
-            webSocket = null;
+        }
+        
+        // Dispose do CancellationTokenSource
+        if (shutdownCts != null) {
+            try {
+                shutdownCts.Dispose();
+            } catch (Exception e) {
+                Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do CancellationTokenSource: {e.Message}");
+            }
+            shutdownCts = null;
         }
         
         Debug.Log($"✅ [User {userNumber}] Shutdown concluído");
@@ -1712,19 +1718,16 @@ void ProcessReceivedMessage(string message) {
             // Parar todas as coroutines (redundante, mas seguro)
             StopAllCoroutines();
             
-            // Fechar WebSocket se ainda não foi fechado
+            // Fechar WebSocket de forma AGressiva e IMEDIATA (sem aguardar CloseAsync)
             if (webSocket != null) {
                 try {
-                    // Tentar fechar rapidamente
-                    if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived) {
-                        CancellationTokenSource closeCts = new CancellationTokenSource(200); // 200ms timeout muito curto
-                        webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "OnDestroy", closeCts.Token);
-                    }
+                    // Abortar conexão imediatamente (mais rápido que CloseAsync)
+                    webSocket.Abort();
                 } catch (Exception e) {
-                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fechar WebSocket no OnDestroy: {e.Message}");
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao abortar WebSocket no OnDestroy: {e.Message}");
                 } finally {
                     try {
-                        webSocket.Dispose();
+                        webSocket.Dispose(); // Dispose imediato
                     } catch (Exception disposeEx) {
                         Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {disposeEx.Message}");
                     }
@@ -1734,7 +1737,11 @@ void ProcessReceivedMessage(string message) {
             
             // Dispose do CancellationTokenSource
             if (shutdownCts != null) {
-                shutdownCts.Dispose();
+                try {
+                    shutdownCts.Dispose();
+                } catch (Exception e) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do CancellationTokenSource: {e.Message}");
+                }
                 shutdownCts = null;
             }
             
