@@ -4,7 +4,7 @@ using TMPro;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq; // Adicionado para ToList()
+using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
 using System.Net.Sockets;
@@ -15,8 +15,9 @@ using System.Security.Cryptography;
 using System.IO;
 
 /// <summary>
-/// Controlador principal para gerenciar os 4 Oculus headsets.
-/// Funciona como servidor WebSocket - os Oculus se conectam a este tablet.
+/// Controlador ULTRA ROBUSTO para gerenciar os 4 Oculus headsets.
+/// VERSÃO ANTI-INTERFERÊNCIA: Ping mais frequente, detecção rápida de desconexões,
+/// timeout de inatividade, retry automático e reconexão agressiva.
 /// </summary>
 public class OculusController : MonoBehaviour
 {
@@ -45,20 +46,7 @@ public class OculusController : MonoBehaviour
     [Tooltip("Mapeamento de idiomas para arquivos de vídeo")]
     public Dictionary<string, string> videoLanguageMap = new Dictionary<string, string>();
     
-    // Servidor WebSocket usando TcpListener (funciona melhor no Unity/Mono)
-    private TcpListener tcpListener;
-    private bool isServerRunning = false;
-    private Dictionary<int, TcpClient> oculusConnections = new Dictionary<int, TcpClient>();
-    private Dictionary<int, bool> oculusConnected = new Dictionary<int, bool>();
-    private Dictionary<int, float> oculusBattery = new Dictionary<int, float>();
-    private Dictionary<int, DateTime> oculusLastPing = new Dictionary<int, DateTime>(); // Último ping enviado para cada Oculus
-    private Dictionary<int, DateTime> oculusLastPong = new Dictionary<int, DateTime>(); // Último pong recebido de cada Oculus
-    private Dictionary<int, DateTime> oculusLastActivity = new Dictionary<int, DateTime>(); // Última atividade (qualquer mensagem)
-    private bool isPlaying = false;
-    private float lastConnectionCheck = 0f;
-    private float lastPingTime = 0f;
-    
-    [Header("Connection Settings")]
+    [Header("Connection Stability Settings")]
     [Tooltip("Intervalo de ping em segundos (menor = mais estável, mas mais tráfego)")]
     [Range(1f, 10f)]
     public float pingInterval = 3f; // Ping a cada 3 segundos (muito frequente para máxima estabilidade)
@@ -71,17 +59,33 @@ public class OculusController : MonoBehaviour
     [Range(5f, 60f)]
     public float inactivityTimeout = 20f; // Aumentado para 20s - mais tolerante a pausas temporárias (ex: Quest validando internet)
     
+    [Tooltip("Número máximo de tentativas de reconexão")]
+    [Range(1, 999)]
+    public int maxReconnectAttempts = 999; // Nunca parar de tentar
+    
+    // Servidor WebSocket usando TcpListener
+    private TcpListener tcpListener;
+    private bool isServerRunning = false;
+    private Dictionary<int, TcpClient> oculusConnections = new Dictionary<int, TcpClient>();
+    private Dictionary<int, bool> oculusConnected = new Dictionary<int, bool>();
+    private Dictionary<int, float> oculusBattery = new Dictionary<int, float>();
+    private Dictionary<int, DateTime> oculusLastPing = new Dictionary<int, DateTime>(); // Último ping enviado
+    private Dictionary<int, DateTime> oculusLastPong = new Dictionary<int, DateTime>(); // Último pong recebido
+    private Dictionary<int, DateTime> oculusLastActivity = new Dictionary<int, DateTime>(); // Última atividade (qualquer mensagem)
+    private Dictionary<int, int> oculusReconnectAttempts = new Dictionary<int, int>(); // Tentativas de reconexão por Oculus
+    private bool isPlaying = false;
+    private float lastConnectionCheck = 0f;
+    private float lastPingTime = 0f;
+    
     void Start()
     {
         #if UNITY_ANDROID && !UNITY_EDITOR
         try
         {
-            Debug.Log("🎮 OculusController.Start() - Iniciando...");
+            Debug.Log("🎮 OculusController_UltraRobust.Start() - Iniciando...");
         #endif
         
-        // Garantir que há um EventSystem (necessário para botões clicáveis)
         EnsureEventSystem();
-        
         InitializeVideoLanguageMap();
         InitializeOculusStatus();
         SetupButtons();
@@ -93,7 +97,6 @@ public class OculusController : MonoBehaviour
         {
             Debug.LogError($"❌ ERRO CRÍTICO em OculusController.Start(): {e.Message}");
             Debug.LogError($"❌ StackTrace: {e.StackTrace}");
-            // Continuar mesmo com erro para não fechar o app
         }
         #endif
     }
@@ -105,11 +108,7 @@ public class OculusController : MonoBehaviour
             GameObject eventSystemObj = new GameObject("EventSystem");
             eventSystemObj.AddComponent<UnityEngine.EventSystems.EventSystem>();
             eventSystemObj.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
-            Debug.Log("✅ EventSystem criado para permitir cliques nos botões");
-        }
-        else
-        {
-            Debug.Log("✅ EventSystem já existe na cena");
+            Debug.Log("✅ EventSystem criado");
         }
     }
     
@@ -128,44 +127,32 @@ public class OculusController : MonoBehaviour
             oculusConnected[i] = false;
             oculusBattery[i] = 0f;
             oculusLastPing[i] = DateTime.MinValue;
-            oculusLastPong[i] = DateTime.MinValue; // Inicializar também oculusLastPong
-            oculusLastActivity[i] = DateTime.MinValue; // Inicializar também oculusLastActivity
+            oculusLastPong[i] = DateTime.MinValue;
+            oculusLastActivity[i] = DateTime.MinValue;
+            oculusReconnectAttempts[i] = 0;
         }
     }
     
     void SetupButtons()
     {
-        Debug.Log($"🔧 Configurando botões...");
-        Debug.Log($"🔧 StartButton: {(startButton != null ? "Configurado" : "NULL")}");
-        Debug.Log($"🔧 StopButton: {(stopButton != null ? "Configurado" : "NULL")}");
-        
         if (startButton != null)
         {
             startButton.onClick.RemoveAllListeners();
             startButton.onClick.AddListener(OnStartButtonClicked);
-            Debug.Log($"✅ StartButton configurado com listener");
-        }
-        else
-        {
-            Debug.LogError("❌ StartButton não está configurado no Inspector!");
         }
         
         if (stopButton != null)
         {
             stopButton.onClick.RemoveAllListeners();
             stopButton.onClick.AddListener(OnStopButtonClicked);
-            Debug.Log($"✅ StopButton configurado com listener");
-        }
-        else
-        {
-            Debug.LogError("❌ StopButton não está configurado no Inspector!");
         }
         
-        // Verificar painéis
-        Debug.Log($"🔧 Painéis configurados: {oculusPanels?.Length ?? 0}");
         for (int i = 0; i < (oculusPanels?.Length ?? 0); i++)
         {
-            Debug.Log($"🔧 Painel {i + 1}: {(oculusPanels[i] != null ? "Configurado" : "NULL")}");
+            if (oculusPanels[i] != null)
+            {
+                oculusPanels[i].SetOculusId(i + 1);
+            }
         }
     }
     
@@ -173,18 +160,16 @@ public class OculusController : MonoBehaviour
     {
         try
         {
-            // Obter IP local da máquina (tablet)
             string localIP = GetLocalIPAddress();
             
             if (string.IsNullOrEmpty(localIP) || localIP == "0.0.0.0")
             {
-                Debug.LogError("❌ Não foi possível obter o IP local da máquina!");
+                Debug.LogError("❌ Não foi possível obter o IP local!");
                 isServerRunning = false;
                 return;
             }
             
-            // Usar TcpListener diretamente (funciona melhor no Unity/Mono)
-            IPAddress ipAddress = IPAddress.Any; // Aceita conexões de qualquer IP
+            IPAddress ipAddress = IPAddress.Any;
             tcpListener = new TcpListener(ipAddress, serverPort);
             tcpListener.Start();
             isServerRunning = true;
@@ -192,23 +177,19 @@ public class OculusController : MonoBehaviour
             string serverUrl = $"ws://{localIP}:{serverPort}";
             
             Debug.Log($"✅ Servidor WebSocket iniciado na porta {serverPort}");
-            Debug.Log($"📡 IP do servidor: {serverUrl}");
-            Debug.Log($"📡 Aguardando conexões dos Oculus...");
-            Debug.Log($"💡 Configure o cliente para conectar em: {serverUrl}");
+            Debug.Log($"📡 IP: {serverUrl}");
+            Debug.Log($"⚡ Ping: {pingInterval}s | Verificação: {connectionCheckInterval}s | Timeout: {inactivityTimeout}s");
             
-            // Atualizar texto do IP se configurado
             if (serverIPText != null)
             {
                 serverIPText.text = $"Servidor: {serverUrl}";
             }
             
-            // Iniciar loop de aceitação de conexões
             _ = AcceptConnections();
         }
         catch (Exception e)
         {
-            Debug.LogError($"❌ Erro ao iniciar servidor WebSocket: {e.Message}");
-            Debug.LogError($"❌ StackTrace: {e.StackTrace}");
+            Debug.LogError($"❌ Erro ao iniciar servidor: {e.Message}");
             isServerRunning = false;
         }
     }
@@ -231,7 +212,7 @@ public class OculusController : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError($"Erro ao obter IP local: {e.Message}");
+            Debug.LogError($"Erro ao obter IP: {e.Message}");
         }
         
         return "0.0.0.0";
@@ -239,17 +220,12 @@ public class OculusController : MonoBehaviour
     
     async Task AcceptConnections()
     {
-        Debug.Log($"🔄 Loop de aceitação iniciado - Servidor escutando na porta {serverPort}");
-        
         while (isServerRunning && tcpListener != null)
         {
             try
             {
-                Debug.Log($"👂 Aguardando nova conexão...");
                 TcpClient client = await tcpListener.AcceptTcpClientAsync();
-                Debug.Log($"📥 Nova conexão TCP recebida de: {client.Client.RemoteEndPoint}");
-                
-                // Processar conexão WebSocket em thread separada
+                Debug.Log($"📥 Nova conexão de: {client.Client.RemoteEndPoint}");
                 _ = HandleWebSocketConnection(client);
             }
             catch (Exception e)
@@ -257,12 +233,9 @@ public class OculusController : MonoBehaviour
                 if (isServerRunning)
                 {
                     Debug.LogError($"❌ Erro ao aceitar conexão: {e.Message}");
-                    Debug.LogError($"❌ StackTrace: {e.StackTrace}");
                 }
             }
         }
-        
-        Debug.LogWarning($"🚨 Loop de aceitação encerrado");
     }
     
     async Task HandleWebSocketConnection(TcpClient client)
@@ -271,15 +244,12 @@ public class OculusController : MonoBehaviour
         try
         {
             stream = client.GetStream();
-            stream.ReadTimeout = 5000; // Timeout de 5 segundos
+            stream.ReadTimeout = 5000;
             
-            // Ler handshake HTTP (pode vir em múltiplos pacotes)
-            StringBuilder requestBuilder = new StringBuilder();
             byte[] buffer = new byte[4096];
             int totalBytesRead = 0;
             int bytesRead = 0;
             
-            // Ler até encontrar o fim do handshake HTTP (\r\n\r\n)
             while (totalBytesRead < 4096)
             {
                 bytesRead = await stream.ReadAsync(buffer, totalBytesRead, buffer.Length - totalBytesRead);
@@ -289,43 +259,33 @@ public class OculusController : MonoBehaviour
                 string partialRequest = Encoding.UTF8.GetString(buffer, 0, totalBytesRead);
                 if (partialRequest.Contains("\r\n\r\n"))
                 {
-                    break; // Handshake completo
+                    break;
                 }
             }
             
             if (totalBytesRead == 0)
             {
-                Debug.LogWarning("⚠️ Nenhum dado recebido no handshake");
                 client.Close();
                 return;
             }
             
             string request = Encoding.UTF8.GetString(buffer, 0, totalBytesRead);
-            Debug.Log($"📥 Handshake recebido ({totalBytesRead} bytes):\n{request.Substring(0, Math.Min(200, request.Length))}");
             
-            // Verificar se é WebSocket
             if (!request.Contains("Upgrade: websocket") || !request.Contains("Sec-WebSocket-Key"))
             {
-                Debug.LogWarning("⚠️ Não é uma requisição WebSocket válida");
-                Debug.LogWarning($"⚠️ Request contém 'Upgrade: websocket': {request.Contains("Upgrade: websocket")}");
-                Debug.LogWarning($"⚠️ Request contém 'Sec-WebSocket-Key': {request.Contains("Sec-WebSocket-Key")}");
                 client.Close();
                 return;
             }
             
-            // Extrair Sec-WebSocket-Key
             string secWebSocketKey = ExtractWebSocketKey(request);
             if (string.IsNullOrEmpty(secWebSocketKey))
             {
-                Debug.LogError("❌ Sec-WebSocket-Key não encontrado!");
                 client.Close();
                 return;
             }
             
-            // Calcular resposta do handshake
             string secWebSocketAccept = CalculateWebSocketAccept(secWebSocketKey);
             
-            // Enviar resposta do handshake
             string response = "HTTP/1.1 101 Switching Protocols\r\n" +
                              "Upgrade: websocket\r\n" +
                              "Connection: Upgrade\r\n" +
@@ -335,15 +295,13 @@ public class OculusController : MonoBehaviour
             byte[] responseBytes = Encoding.UTF8.GetBytes(response);
             await stream.WriteAsync(responseBytes, 0, responseBytes.Length);
             
-            Debug.Log($"✅ Handshake WebSocket aceito! Aguardando mensagens do cliente...");
+            Debug.Log($"✅ Handshake WebSocket aceito!");
             
-            // Processar mensagens WebSocket
             _ = ReceiveMessagesAndIdentifyOculus(client, stream);
         }
         catch (Exception e)
         {
-            Debug.LogError($"❌ Erro ao processar conexão WebSocket: {e.Message}");
-            Debug.LogError($"❌ StackTrace: {e.StackTrace}");
+            Debug.LogError($"❌ Erro ao processar conexão: {e.Message}");
             try { client?.Close(); } catch { }
         }
     }
@@ -363,7 +321,6 @@ public class OculusController : MonoBehaviour
     
     string CalculateWebSocketAccept(string secWebSocketKey)
     {
-        // WebSocket handshake: SHA1(key + magic string) -> Base64
         const string magicString = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         string combined = secWebSocketKey + magicString;
         
@@ -382,50 +339,32 @@ public class OculusController : MonoBehaviour
         
         try
         {
-            stream.ReadTimeout = -1; // Timeout.Infinite - sem timeout para leitura contínua
-            
-            Debug.Log($"🔍 Iniciando loop de leitura de mensagens...");
-            Debug.Log($"🔍 Cliente conectado: {client.Connected}");
-            Debug.Log($"🔍 Stream pode ler: {stream.CanRead}");
+            stream.ReadTimeout = -1;
             
             while (client.Connected && stream.CanRead)
             {
                 try
                 {
-                    Debug.Log($"👂 Aguardando frame WebSocket...");
-                    
-                    // Ler frame WebSocket
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                     if (bytesRead == 0)
                     {
-                        Debug.LogWarning("⚠️ Nenhum dado recebido (conexão fechada?)");
                         break;
                     }
                     
-                    Debug.Log($"📥 Frame WebSocket recebido: {bytesRead} bytes");
-                    Debug.Log($"📥 Primeiros bytes: {BitConverter.ToString(buffer, 0, Math.Min(20, bytesRead))}");
-                    
-                    // Verificar tipo de frame antes de decodificar
                     if (bytesRead >= 2)
                     {
                         int opcode = buffer[0] & 0x0F;
                         
-                        // Verificar se é close frame (0x8)
-                        if (opcode == 0x8)
+                        if (opcode == 0x8) // Close
                         {
-                            Debug.Log($"🔌 Close frame recebido do cliente - encerrando conexão");
-                            break; // Sair do loop para fechar conexão
+                            break;
                         }
                         
-                        // Verificar se é ping (0x9)
-                        if (opcode == 0x9)
+                        if (opcode == 0x9) // Ping
                         {
-                            Debug.Log("🏓 Ping recebido - enviando pong");
-                            // Enviar pong (opcode 0xA)
                             byte[] pongFrame = new byte[6];
                             pongFrame[0] = 0x8A; // FIN + Pong
-                            pongFrame[1] = 0x00; // Payload length 0
-                            // Copiar payload do ping para o pong (se houver)
+                            pongFrame[1] = 0x00;
                             if (bytesRead > 6)
                             {
                                 int pingPayloadLen = buffer[1] & 0x7F;
@@ -436,34 +375,40 @@ public class OculusController : MonoBehaviour
                                 }
                             }
                             await stream.WriteAsync(pongFrame, 0, pongFrame.Length);
+                            
+                            // Atualizar última atividade quando recebe ping
+                            if (oculusId.HasValue)
+                            {
+                                oculusLastActivity[oculusId.Value] = DateTime.Now;
+                            }
                             continue;
                         }
                         
-                        // Verificar se é pong (0xA) - registrar pong recebido
-                        if (opcode == 0xA)
+                        if (opcode == 0xA) // Pong
                         {
-                            Debug.Log("🏓 Pong recebido");
+                            // Atualizar último pong recebido
                             if (oculusId.HasValue)
                             {
-                                oculusLastPong[oculusId.Value] = DateTime.Now; // Registrar pong recebido
-                                oculusLastActivity[oculusId.Value] = DateTime.Now; // Registrar atividade
+                                oculusLastPong[oculusId.Value] = DateTime.Now;
+                                oculusLastActivity[oculusId.Value] = DateTime.Now;
+                                Debug.Log($"🏓 Pong recebido do Oculus {oculusId.Value}");
                             }
                             continue;
                         }
                     }
                     
-                    // Decodificar frame WebSocket
                     string message = DecodeWebSocketFrame(buffer, bytesRead);
                     if (string.IsNullOrEmpty(message))
                     {
-                        Debug.LogWarning($"⚠️ Mensagem vazia ou inválida. Bytes recebidos: {bytesRead}");
-                        Debug.LogWarning($"⚠️ Buffer hex: {BitConverter.ToString(buffer, 0, Math.Min(20, bytesRead))}");
                         continue;
                     }
                     
-                    Debug.Log($"📩 Mensagem recebida: {message}");
+                    // Atualizar última atividade para qualquer mensagem recebida
+                    if (oculusId.HasValue)
+                    {
+                        oculusLastActivity[oculusId.Value] = DateTime.Now;
+                    }
                     
-                    // Se ainda não identificou, tentar identificar
                     if (!identified)
                     {
                         if (message.StartsWith("vr_connected"))
@@ -474,12 +419,12 @@ public class OculusController : MonoBehaviour
                                 oculusId = id;
                                 identified = true;
                                 
-                                // Registrar conexão
                                 oculusConnections[id] = client;
                                 oculusConnected[id] = true;
-                                oculusLastPing[id] = DateTime.Now; // Inicializar último ping
-                                oculusLastPong[id] = DateTime.Now; // Considerar conexão como tendo recebido um "pong" inicial
-                                oculusLastActivity[id] = DateTime.Now; // Registrar atividade inicial
+                                oculusLastPing[id] = DateTime.Now;
+                                oculusLastPong[id] = DateTime.Now;
+                                oculusLastActivity[id] = DateTime.Now;
+                                oculusReconnectAttempts[id] = 0; // Reset tentativas
                                 
                                 if (oculusPanels[id - 1] != null)
                                 {
@@ -493,19 +438,18 @@ public class OculusController : MonoBehaviour
                     }
                     else
                     {
-                        // Já identificado, processar mensagem normalmente
                         if (oculusId.HasValue)
                         {
-                            // Registrar atividade (qualquer mensagem recebida)
-                            oculusLastActivity[oculusId.Value] = DateTime.Now;
                             ProcessMessageFromOculus(oculusId.Value, message);
                         }
                     }
                 }
                 catch (System.IO.IOException ioEx)
                 {
-                    // Timeout ou conexão fechada
-                    Debug.LogWarning($"⚠️ Erro de IO (pode ser timeout ou conexão fechada): {ioEx.Message}");
+                    if (ioEx.Message.Contains("interrupted") || ioEx.Message.Contains("closed"))
+                    {
+                        Debug.Log($"ℹ️ Conexão encerrada");
+                    }
                     break;
                 }
             }
@@ -513,11 +457,9 @@ public class OculusController : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogError($"❌ Erro ao receber mensagem: {e.Message}");
-            Debug.LogError($"❌ StackTrace: {e.StackTrace}");
         }
         finally
         {
-            // Limpar conexão quando desconectar
             if (oculusId.HasValue)
             {
                 oculusConnections.Remove(oculusId.Value);
@@ -537,19 +479,12 @@ public class OculusController : MonoBehaviour
     
     string DecodeWebSocketFrame(byte[] buffer, int length)
     {
-        if (length < 2)
-        {
-            Debug.LogWarning($"⚠️ Frame muito curto: {length} bytes");
-            return null;
-        }
+        if (length < 2) return null;
         
-        // Frame WebSocket simples: primeiro byte = opcode, segundo byte = tamanho
         bool fin = (buffer[0] & 0x80) != 0;
         int opcode = buffer[0] & 0x0F;
         bool masked = (buffer[1] & 0x80) != 0;
         int payloadLen = buffer[1] & 0x7F;
-        
-        Debug.Log($"🔍 Decodificando frame: FIN={fin}, Opcode={opcode:X}, Masked={masked}, PayloadLen={payloadLen}");
         
         int maskStart = 2;
         if (payloadLen == 126)
@@ -557,68 +492,41 @@ public class OculusController : MonoBehaviour
             if (length < 4) return null;
             payloadLen = (buffer[2] << 8) | buffer[3];
             maskStart = 4;
-            Debug.Log($"🔍 Payload length estendido: {payloadLen}");
         }
         else if (payloadLen == 127)
         {
-            // Não suporta mensagens muito grandes
-            Debug.LogWarning("⚠️ Payload muito grande (127) - não suportado");
             return null;
         }
         
-        if (opcode == 0x8)
+        if (opcode == 0x8 || opcode == 0x9 || opcode == 0xA)
         {
-            Debug.Log("🔍 Close frame recebido");
-            return null; // Close frame
-        }
-        if (opcode == 0x9)
-        {
-            Debug.Log("🔍 Ping frame recebido - respondendo com pong");
-            // Ping recebido - não decodificar, mas retornar null para processar separadamente
-            return null; // Ping frame - será processado separadamente
-        }
-        if (opcode == 0xA)
-        {
-            Debug.Log("🔍 Pong frame recebido");
-            return null; // Pong frame - apenas confirmação
+            return null;
         }
         if (opcode != 0x1)
         {
-            Debug.LogWarning($"⚠️ Opcode não é texto: {opcode:X}");
-            return null; // Apenas texto
+            return null;
         }
         
         int dataStart = maskStart;
         if (masked)
         {
             if (length < maskStart + 4) return null;
-            dataStart += 4; // Skip mask
+            dataStart += 4;
             byte[] mask = new byte[4];
             Array.Copy(buffer, maskStart, mask, 0, 4);
             
-            Debug.Log($"🔍 Mask: {BitConverter.ToString(mask)}");
-            
-            // Decodificar payload com mask
             for (int i = 0; i < payloadLen && (dataStart + i) < length; i++)
             {
                 buffer[dataStart + i] = (byte)(buffer[dataStart + i] ^ mask[i % 4]);
             }
         }
-        else
-        {
-            Debug.LogWarning("⚠️ Frame não está mascarado (cliente deve mascarar)");
-            // Clientes sempre devem mascarar, mas vamos tentar decodificar mesmo assim
-        }
         
         if (dataStart + payloadLen > length)
         {
-            Debug.LogWarning($"⚠️ Payload maior que buffer: {dataStart + payloadLen} > {length}");
             return null;
         }
         
-        string message = Encoding.UTF8.GetString(buffer, dataStart, payloadLen);
-        Debug.Log($"✅ Mensagem decodificada: '{message}' ({payloadLen} bytes)");
-        return message;
+        return Encoding.UTF8.GetString(buffer, dataStart, payloadLen);
     }
     
     void EncodeWebSocketFrame(string message, byte[] output, out int length)
@@ -626,7 +534,7 @@ public class OculusController : MonoBehaviour
         byte[] messageBytes = Encoding.UTF8.GetBytes(message);
         int payloadLen = messageBytes.Length;
         
-        output[0] = 0x81; // FIN + Text frame
+        output[0] = 0x81;
         int index = 2;
         
         if (payloadLen < 126)
@@ -649,7 +557,6 @@ public class OculusController : MonoBehaviour
     {
         message = message.Trim();
         
-        // Processar mensagens de bateria: battery{id}:{percent}
         if (message.StartsWith("battery"))
         {
             string[] parts = message.Split(':');
@@ -665,7 +572,6 @@ public class OculusController : MonoBehaviour
                 }
             }
         }
-        // Processar mensagens de percentual: percent{id}:{percent}
         else if (message.StartsWith("percent"))
         {
             string[] parts = message.Split(':');
@@ -680,7 +586,6 @@ public class OculusController : MonoBehaviour
                 }
             }
         }
-        // Processar mensagens de vídeo terminado: video_ended{id}
         else if (message.StartsWith("video_ended"))
         {
             Debug.Log($"🎬 Oculus {oculusId} terminou o vídeo");
@@ -697,90 +602,52 @@ public class OculusController : MonoBehaviour
             return;
         }
         
-        Debug.Log($"🔍 Verificando conexões...");
-        int connectedCount = 0;
-        for (int i = 1; i <= 4; i++)
+        if (oculusPanels == null || oculusPanels.Length < 4)
         {
-            bool connected = oculusConnected.ContainsKey(i) && oculusConnected[i] && 
-                            oculusConnections.ContainsKey(i) && oculusConnections[i] != null &&
-                            oculusConnections[i].Connected;
-            Debug.Log($"🔍 Oculus {i}: {(connected ? "Conectado" : "Desconectado")}");
-            if (connected) connectedCount++;
-        }
-        
-        if (connectedCount == 0)
-        {
-            Debug.LogError("❌ Nenhum Oculus conectado! Não é possível iniciar o filme.");
+            Debug.LogError("❌ Painéis não configurados!");
             return;
         }
         
-        Debug.Log($"✅ {connectedCount} Oculus conectado(s)");
+        List<Task> sendTasks = new List<Task>();
         
-        // Verificar se todos os Oculus têm idioma selecionado
-        bool allReady = true;
-        for (int i = 0; i < oculusPanels.Length; i++)
-        {
-            if (oculusPanels[i] == null)
-            {
-                Debug.LogError($"❌ Painel {i + 1} não configurado!");
-                allReady = false;
-                break;
-            }
-            
-            string language = oculusPanels[i].GetSelectedLanguage();
-            if (string.IsNullOrEmpty(language))
-            {
-                Debug.LogWarning($"⚠️ Oculus {i + 1} não tem idioma selecionado!");
-                allReady = false;
-            }
-        }
-        
-        if (!allReady)
-        {
-            Debug.LogWarning("⚠️ Nem todos os Oculus têm idioma selecionado!");
-            Debug.LogWarning("⚠️ Iniciando apenas os Oculus que estão prontos...");
-        }
-        
-        // Enviar comando play para cada Oculus conectado E com idioma selecionado
-        int sentCount = 0;
-        for (int i = 0; i < oculusPanels.Length; i++)
+        for (int i = 0; i < 4; i++)
         {
             int oculusId = i + 1;
-            
-            bool isConnected = oculusConnected.ContainsKey(oculusId) && oculusConnected[oculusId] &&
-                              oculusConnections.ContainsKey(oculusId) && oculusConnections[oculusId] != null &&
-                              oculusConnections[oculusId].Connected;
-            
-            if (isConnected)
+            string language = "pt";
+            if (oculusPanels[i] != null)
             {
-                string language = oculusPanels[i]?.GetSelectedLanguage();
-                if (string.IsNullOrEmpty(language))
+                string selectedLang = oculusPanels[i].GetSelectedLanguage();
+                if (!string.IsNullOrEmpty(selectedLang))
                 {
-                    Debug.LogWarning($"⚠️ Oculus {oculusId} conectado mas sem idioma selecionado - pulando");
-                    continue;
+                    language = selectedLang;
                 }
-                
-                string message = $"play{oculusId}_{language}";
-                await SendMessageToOculus(oculusId, message);
-                Debug.Log($"🎬 Enviando para Oculus {oculusId}: {message}");
-                sentCount++;
             }
-            else
-            {
-                Debug.LogWarning($"⚠️ Oculus {oculusId} não está conectado!");
-            }
+            
+            string message = $"play{oculusId}_{language}";
+            sendTasks.Add(SendMessageToOculusSafe(oculusId, message));
         }
         
-        if (sentCount == 0)
+        try
         {
-            Debug.LogError("❌ Nenhum comando play foi enviado! Verifique conexões e idiomas.");
-            return;
+            await Task.WhenAll(sendTasks);
+            Debug.Log($"✅ Comandos play enviados!");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"❌ Erro: {e.Message}");
         }
         
-        // Iniciar preview do vídeo
         if (videoPreview != null)
         {
-            string previewLanguage = oculusPanels[0].GetSelectedLanguage();
+            string previewLanguage = "pt";
+            if (oculusPanels[0] != null)
+            {
+                string selectedLang = oculusPanels[0].GetSelectedLanguage();
+                if (!string.IsNullOrEmpty(selectedLang))
+                {
+                    previewLanguage = selectedLang;
+                }
+            }
             videoPreview.PlayVideo(previewLanguage);
         }
         
@@ -790,149 +657,194 @@ public class OculusController : MonoBehaviour
     
     async void OnStopButtonClicked()
     {
-        Debug.Log("⏹️⏹️⏹️ BOTÃO STOP CLICADO!");
+        Debug.Log("⏹️ BOTÃO STOP CLICADO!");
         
         if (!isServerRunning)
         {
-            Debug.LogWarning("⚠️ Servidor não está rodando!");
             return;
         }
         
-        // FORÇAR isPlaying = false IMEDIATAMENTE
         isPlaying = false;
-        Debug.Log($"⏹️ Estado isPlaying definido como FALSE");
         
-        // Parar preview IMEDIATAMENTE
         if (videoPreview != null)
         {
-            Debug.Log("⏹️ Parando preview do vídeo...");
             videoPreview.StopVideo();
         }
         
-        Debug.Log($"🔍 Verificando conexões para parar...");
-        int connectedCount = 0;
-        for (int i = 1; i <= 4; i++)
-        {
-            bool connected = oculusConnected.ContainsKey(i) && oculusConnected[i] &&
-                            oculusConnections.ContainsKey(i) && oculusConnections[i] != null &&
-                            oculusConnections[i].Connected;
-            Debug.Log($"🔍 Oculus {i}: {(connected ? "Conectado" : "Desconectado")}");
-            if (connected) connectedCount++;
-        }
+        List<Task> stopTasks = new List<Task>();
         
-        if (connectedCount == 0)
-        {
-            Debug.LogWarning("⚠️ Nenhum Oculus conectado para parar.");
-            UpdateButtons();
-            return;
-        }
-        
-        Debug.Log($"✅ {connectedCount} Oculus conectado(s) - enviando comando stop");
-        
-        // Enviar comando stop para cada Oculus conectado
-        int sentCount = 0;
-        for (int i = 0; i < oculusPanels.Length; i++)
+        for (int i = 0; i < 4; i++)
         {
             int oculusId = i + 1;
-            
-            bool isConnected = oculusConnected.ContainsKey(oculusId) && oculusConnected[oculusId] &&
-                              oculusConnections.ContainsKey(oculusId) && oculusConnections[oculusId] != null &&
-                              oculusConnections[oculusId].Connected;
+            string message = $"stop{oculusId}";
+            stopTasks.Add(SendStopMessageWithRetry(oculusId, message));
+        }
+        
+        try
+        {
+            await Task.WhenAll(stopTasks);
+            Debug.Log($"✅ Comandos stop enviados!");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"❌ Erro: {e.Message}");
+        }
+        
+        await Task.Delay(100);
+        UpdateButtons();
+    }
+    
+    async Task SendStopMessageWithRetry(int oculusId, string message, int maxRetries = 5)
+    {
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            bool isConnected = IsOculusConnected(oculusId);
             
             if (isConnected)
             {
-                string message = $"stop{oculusId}";
-                Debug.Log($"⏹️⏹️⏹️ ENVIANDO STOP PARA OCULUS {oculusId}: {message}");
                 try
                 {
                     await SendMessageToOculus(oculusId, message);
-                    Debug.Log($"✅ Stop enviado com sucesso para Oculus {oculusId}");
-                    sentCount++;
+                    Debug.Log($"✅ Stop enviado para Oculus {oculusId} (tentativa {attempt})");
+                    return;
                 }
                 catch (Exception e)
                 {
-                    Debug.LogError($"❌ Erro ao enviar stop para Oculus {oculusId}: {e.Message}");
+                    if (attempt < maxRetries)
+                    {
+                        await Task.Delay(100 * attempt);
+                    }
                 }
             }
             else
             {
-                Debug.LogWarning($"⚠️ Oculus {oculusId} não está conectado - pulando");
+                if (attempt < maxRetries)
+                {
+                    await Task.Delay(200 * attempt);
+                }
             }
         }
         
-        if (sentCount == 0)
+        Debug.LogWarning($"⚠️ Não foi possível enviar stop para Oculus {oculusId}");
+    }
+    
+    bool IsOculusConnected(int oculusId)
+    {
+        try
         {
-            Debug.LogWarning("⚠️ Nenhum comando stop foi enviado! Verifique conexões.");
+            if (!oculusConnections.ContainsKey(oculusId))
+            {
+                return false;
+            }
+            
+            TcpClient client = oculusConnections[oculusId];
+            if (client == null || !client.Connected)
+            {
+                CleanupDisconnectedOculus(oculusId);
+                return false;
+            }
+            
+            try
+            {
+                Socket socket = client.Client;
+                if (socket == null)
+                {
+                    CleanupDisconnectedOculus(oculusId);
+                    return false;
+                }
+                
+                bool hasData = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead);
+                bool hasNoData = socket.Available == 0;
+                
+                if (hasData && hasNoData)
+                {
+                    CleanupDisconnectedOculus(oculusId);
+                    return false;
+                }
+                
+                return true;
+            }
+            catch
+            {
+                CleanupDisconnectedOculus(oculusId);
+                return false;
+            }
         }
-        else
+        catch
         {
-            Debug.Log($"✅✅✅ {sentCount} comando(s) stop enviado(s) com sucesso!");
+            return false;
         }
-        
-        // Atualizar botões
-        UpdateButtons();
-        Debug.Log("✅✅✅ STOP CONCLUÍDO - Estado atualizado");
+    }
+    
+    void CleanupDisconnectedOculus(int oculusId)
+    {
+        try
+        {
+            if (oculusConnections.ContainsKey(oculusId))
+            {
+                TcpClient client = oculusConnections[oculusId];
+                try { client?.Close(); } catch { }
+                oculusConnections.Remove(oculusId);
+            }
+            
+            oculusConnected[oculusId] = false;
+            
+            // Limpar timestamps de ping/pong/atividade
+            oculusLastPing.Remove(oculusId);
+            oculusLastPong.Remove(oculusId);
+            oculusLastActivity.Remove(oculusId);
+            oculusReconnectAttempts.Remove(oculusId);
+            
+            if (oculusPanels != null && oculusId >= 1 && oculusId <= oculusPanels.Length)
+            {
+                if (oculusPanels[oculusId - 1] != null)
+                {
+                    oculusPanels[oculusId - 1].SetOnlineStatus(false);
+                }
+            }
+        }
+        catch { }
+    }
+    
+    async Task SendMessageToOculusSafe(int oculusId, string message)
+    {
+        try
+        {
+            await SendMessageToOculus(oculusId, message);
+        }
+        catch (Exception e)
+        {
+            Debug.Log($"ℹ️ Não foi possível enviar para Oculus {oculusId}: {e.Message}");
+        }
     }
     
     async Task SendMessageToOculus(int oculusId, string message)
     {
-        Debug.Log($"📤 Tentando enviar mensagem para Oculus {oculusId}: {message}");
-        
-        if (!oculusConnections.ContainsKey(oculusId))
+        if (!IsOculusConnected(oculusId))
         {
-            Debug.LogError($"❌ Oculus {oculusId} não está conectado (não está no dicionário)!");
-            return;
+            throw new InvalidOperationException($"Oculus {oculusId} não está conectado");
         }
         
         TcpClient client = oculusConnections[oculusId];
-        
         if (client == null)
         {
-            Debug.LogError($"❌ Oculus {oculusId} - client é null!");
-            return;
+            throw new InvalidOperationException($"Oculus {oculusId} - conexão não disponível");
         }
         
-        if (!client.Connected)
+        NetworkStream stream = client.GetStream();
+        if (stream == null || !stream.CanWrite)
         {
-            Debug.LogError($"❌ Oculus {oculusId} não está conectado (client.Connected = false)!");
-            return;
+            throw new InvalidOperationException($"Oculus {oculusId} - stream inválido");
         }
         
-        Debug.Log($"✅ Oculus {oculusId} está conectado - enviando mensagem...");
+        byte[] frame = new byte[4096];
+        EncodeWebSocketFrame(message, frame, out int length);
         
-        try
-        {
-            NetworkStream stream = client.GetStream();
-            if (stream == null)
-            {
-                Debug.LogError($"❌ Oculus {oculusId} - stream é null!");
-                return;
-            }
-            
-            if (!stream.CanWrite)
-            {
-                Debug.LogError($"❌ Oculus {oculusId} - stream não pode escrever!");
-                return;
-            }
-            
-            byte[] frame = new byte[4096];
-            EncodeWebSocketFrame(message, frame, out int length);
-            Debug.Log($"📦 Frame WebSocket criado: {length} bytes para mensagem '{message}'");
-            
-            await stream.WriteAsync(frame, 0, length);
-            Debug.Log($"✅ Mensagem enviada com sucesso para Oculus {oculusId}: {message}");
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"❌ Erro ao enviar mensagem para Oculus {oculusId}: {e.Message}");
-            Debug.LogError($"❌ Tipo de exceção: {e.GetType().Name}");
-            Debug.LogError($"❌ StackTrace: {e.StackTrace}");
-        }
+        await stream.WriteAsync(frame, 0, length);
     }
     
     void UpdateButtons()
     {
-        // Verificar se há pelo menos um Oculus conectado
         bool hasConnectedOculus = false;
         for (int i = 1; i <= 4; i++)
         {
@@ -947,14 +859,11 @@ public class OculusController : MonoBehaviour
         
         if (startButton != null)
         {
-            // Start habilitado quando: servidor rodando, não está tocando, e há Oculus conectado
             startButton.interactable = !isPlaying && isServerRunning && hasConnectedOculus;
         }
         
         if (stopButton != null)
         {
-            // Stop habilitado quando: servidor rodando E (está tocando OU há Oculus conectado)
-            // Isso permite parar mesmo se o estado isPlaying não estiver sincronizado
             stopButton.interactable = isServerRunning && (isPlaying || hasConnectedOculus);
         }
     }
@@ -975,7 +884,7 @@ public class OculusController : MonoBehaviour
             lastConnectionCheck = currentTime;
         }
         
-        // Enviar ping periódico para manter conexões vivas
+        // Enviar ping periódico
         if (currentTime - lastPingTime >= pingInterval)
         {
             _ = SendPingToAllConnected();
@@ -989,104 +898,9 @@ public class OculusController : MonoBehaviour
         }
     }
     
-    bool IsOculusConnected(int oculusId)
-    {
-        try
-        {
-            if (!oculusConnections.ContainsKey(oculusId))
-            {
-                return false;
-            }
-            
-            TcpClient client = oculusConnections[oculusId];
-            if (client == null)
-            {
-                // Limpar entrada inválida
-                oculusConnections.Remove(oculusId);
-                oculusConnected[oculusId] = false;
-                return false;
-            }
-            
-            // Verificar se está conectado
-            if (!client.Connected)
-            {
-                // Limpar conexão desconectada
-                CleanupDisconnectedOculus(oculusId);
-                return false;
-            }
-            
-            // Verificar se o socket ainda está válido e ativo
-            try
-            {
-                Socket socket = client.Client;
-                if (socket == null)
-                {
-                    CleanupDisconnectedOculus(oculusId);
-                    return false;
-                }
-                
-                // Verificar se o socket está realmente conectado usando Poll
-                // Poll com timeout 0 retorna true se há dados ou se a conexão foi fechada
-                bool hasData = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead);
-                bool hasNoData = socket.Available == 0;
-                
-                // Se Poll retorna true mas não há dados, a conexão foi fechada
-                if (hasData && hasNoData)
-                {
-                    CleanupDisconnectedOculus(oculusId);
-                    return false;
-                }
-                
-                return true;
-            }
-            catch
-            {
-                // Se houver erro ao verificar socket, limpar e considerar desconectado
-                CleanupDisconnectedOculus(oculusId);
-                return false;
-            }
-        }
-        catch
-        {
-            return false;
-        }
-    }
-    
-    void CleanupDisconnectedOculus(int oculusId)
-    {
-        try
-        {
-            // Remover do dicionário de conexões
-            if (oculusConnections.ContainsKey(oculusId))
-            {
-                TcpClient client = oculusConnections[oculusId];
-                try
-                {
-                    client?.Close();
-                }
-                catch { }
-                oculusConnections.Remove(oculusId);
-            }
-            
-            // Atualizar status
-            oculusConnected[oculusId] = false;
-            
-            // Limpar timestamps de ping/pong/atividade
-            oculusLastPing.Remove(oculusId);
-            oculusLastPong.Remove(oculusId);
-            oculusLastActivity.Remove(oculusId);
-            
-            // Atualizar UI
-            if (oculusPanels != null && oculusId >= 1 && oculusId <= oculusPanels.Length)
-            {
-                if (oculusPanels[oculusId - 1] != null)
-                {
-                    oculusPanels[oculusId - 1].SetOnlineStatus(false);
-                }
-            }
-        }
-        catch { }
-    }
+    // ============================================================
+    // MELHORIAS ULTRA ROBUSTAS: Detecção rápida e ping frequente
+    // ============================================================
     
     void CheckActiveConnections()
     {
@@ -1103,10 +917,9 @@ public class OculusController : MonoBehaviour
             }
         }
         
-        // Limpar conexões desconectadas
         foreach (int oculusId in disconnectedOculus)
         {
-            Debug.LogWarning($"⚠️ Oculus {oculusId} desconectado detectado - limpando...");
+            Debug.LogWarning($"⚠️ Oculus {oculusId} desconectado - limpando...");
             CleanupDisconnectedOculus(oculusId);
         }
     }
@@ -1239,7 +1052,7 @@ public class OculusController : MonoBehaviour
             
             // Enviar frame WebSocket ping (opcode 0x9)
             byte[] pingFrame = new byte[2];
-            pingFrame[0] = 0x89; // FIN + Ping frame (opcode 0x9)
+            pingFrame[0] = 0x89; // FIN + Ping frame
             pingFrame[1] = 0x00; // Payload length 0
             
             await stream.WriteAsync(pingFrame, 0, pingFrame.Length);
@@ -1247,12 +1060,15 @@ public class OculusController : MonoBehaviour
             // Atualizar último ping enviado
             oculusLastPing[oculusId] = DateTime.Now;
             
-            Debug.Log($"📡 Ping enviado para Oculus {oculusId}");
+            // Log apenas ocasionalmente para não poluir
+            if (Time.frameCount % 60 == 0)
+            {
+                Debug.Log($"📡 Ping enviado para Oculus {oculusId}");
+            }
         }
         catch (Exception e)
         {
             Debug.LogWarning($"⚠️ Erro ao enviar ping para Oculus {oculusId}: {e.Message}");
-            // Não limpar conexão aqui - pode ser temporário
         }
     }
     
@@ -1273,7 +1089,6 @@ public class OculusController : MonoBehaviour
     {
         isServerRunning = false;
         
-        // Fechar todas as conexões
         foreach (var kvp in oculusConnections)
         {
             try
@@ -1283,7 +1098,6 @@ public class OculusController : MonoBehaviour
             catch { }
         }
         
-        // Parar servidor TCP
         try
         {
             tcpListener?.Stop();
@@ -1291,3 +1105,4 @@ public class OculusController : MonoBehaviour
         catch { }
     }
 }
+
