@@ -55,9 +55,9 @@ public class OculusController : MonoBehaviour
     [Range(1f, 10f)]
     public float connectionCheckInterval = 2f; // Verificar a cada 2 segundos (detecção rápida)
     
-    [Tooltip("Timeout de inatividade em segundos (sem pong = desconectado)")]
+    [Tooltip("Timeout de inatividade em segundos (DESABILITADO - confia apenas no TCP)")]
     [Range(5f, 120f)]
-    public float inactivityTimeout = 60f; // Aumentado para 60s - muito tolerante para evitar desconexões prematuras
+    public float inactivityTimeout = 60f; // NÃO USADO - mantido apenas para compatibilidade
     
     [Tooltip("Número máximo de tentativas de reconexão")]
     [Range(1, 999)]
@@ -876,15 +876,14 @@ public class OculusController : MonoBehaviour
         
         float currentTime = Time.time;
         
-        // Verificar conexões ativas e timeout de inatividade
+        // Verificar conexões ativas APENAS (sem timeout de inatividade - confia no TCP)
         if (currentTime - lastConnectionCheck >= connectionCheckInterval)
         {
             CheckActiveConnections();
-            CheckInactivityTimeouts();
             lastConnectionCheck = currentTime;
         }
         
-        // Enviar ping periódico
+        // Enviar ping periódico apenas para manter conexão viva (não usa para desconectar)
         if (currentTime - lastPingTime >= pingInterval)
         {
             _ = SendPingToAllConnected();
@@ -904,6 +903,9 @@ public class OculusController : MonoBehaviour
     
     void CheckActiveConnections()
     {
+        // SOLUÇÃO SIMPLIFICADA: Confia apenas no TCP nativo
+        // Se TCP está conectado, mantém conectado
+        // Só desconecta quando TCP realmente falha
         List<int> disconnectedOculus = new List<int>();
         
         foreach (var kvp in oculusConnections.ToList())
@@ -911,20 +913,55 @@ public class OculusController : MonoBehaviour
             int oculusId = kvp.Key;
             TcpClient client = kvp.Value;
             
-            if (client == null || !IsOculusConnected(oculusId))
+            // Verificação SIMPLES: apenas se TCP está realmente desconectado
+            if (client == null)
             {
+                disconnectedOculus.Add(oculusId);
+                continue;
+            }
+            
+            // Verificar se TCP está realmente desconectado (sem lógica complexa)
+            try
+            {
+                if (!client.Connected)
+                {
+                    disconnectedOculus.Add(oculusId);
+                    continue;
+                }
+                
+                // Verificação TCP simples: se socket está morto
+                Socket socket = client.Client;
+                if (socket == null)
+                {
+                    disconnectedOculus.Add(oculusId);
+                    continue;
+                }
+                
+                // Poll com timeout 0 - se retorna true e não há dados, socket está fechado
+                bool socketDead = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead) && socket.Available == 0;
+                if (socketDead)
+                {
+                    disconnectedOculus.Add(oculusId);
+                }
+            }
+            catch
+            {
+                // Se houver exceção ao verificar, TCP está morto
                 disconnectedOculus.Add(oculusId);
             }
         }
         
+        // Limpar apenas conexões realmente desconectadas
         foreach (int oculusId in disconnectedOculus)
         {
-            Debug.LogWarning($"⚠️ Oculus {oculusId} desconectado - limpando...");
+            Debug.LogWarning($"🔌 Oculus {oculusId} desconectado (TCP falhou) - limpando...");
             CleanupDisconnectedOculus(oculusId);
         }
     }
     
-    void CheckInactivityTimeouts()
+    // REMOVIDO: CheckInactivityTimeouts() - lógica muito complexa causava problemas
+    // Agora confiamos apenas no TCP nativo - se TCP está conectado, mantém conectado
+    void CheckInactivityTimeouts_DEPRECATED()
     {
         DateTime now = DateTime.Now;
         List<int> timeoutOculus = new List<int>();
