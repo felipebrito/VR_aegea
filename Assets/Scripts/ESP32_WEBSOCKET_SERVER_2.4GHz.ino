@@ -52,12 +52,14 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
             }
             break;
         case WStype_TEXT:
-            Serial.printf("[%u] Mensagem recebida: %s\n", num, payload);
-            String message = String((char*)payload);
-            if (message.startsWith("PING:")) {
-                webSocket.sendTXT(num, "PONG");
-            } else {
-                webSocket.sendTXT(num, payload);
+            {
+                Serial.printf("[%u] Mensagem recebida: %s\n", num, payload);
+                String message = String((char*)payload);
+                if (message.startsWith("PING:")) {
+                    webSocket.sendTXT(num, "PONG");
+                } else {
+                    webSocket.sendTXT(num, payload);
+                }
             }
             break;
         case WStype_PING:
