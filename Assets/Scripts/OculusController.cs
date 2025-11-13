@@ -56,8 +56,8 @@ public class OculusController : MonoBehaviour
     public float connectionCheckInterval = 2f; // Verificar a cada 2 segundos (detecção rápida)
     
     [Tooltip("Timeout de inatividade em segundos (sem pong = desconectado)")]
-    [Range(5f, 60f)]
-    public float inactivityTimeout = 20f; // Aumentado para 20s - mais tolerante a pausas temporárias (ex: Quest validando internet)
+    [Range(5f, 120f)]
+    public float inactivityTimeout = 60f; // Aumentado para 60s - muito tolerante para evitar desconexões prematuras
     
     [Tooltip("Número máximo de tentativas de reconexão")]
     [Range(1, 999)]
@@ -964,16 +964,45 @@ public class OculusController : MonoBehaviour
                 if (oculusLastPing.ContainsKey(oculusId))
                 {
                     TimeSpan timeSincePing = now - oculusLastPing[oculusId];
-                    // Se enviou ping há menos de 5s, dar mais tempo para resposta
+                    // Se enviou ping há menos de 15s, dar mais tempo para resposta
                     // (Quest pode estar validando internet e demorar para responder)
-                    if (timeSincePing.TotalSeconds < 5f)
+                    if (timeSincePing.TotalSeconds < 15f)
                     {
                         hasRecentPing = true;
                     }
                 }
                 
-                // Só considerar timeout se não há ping recente também
-                if (!hasRecentPing)
+                // Verificar se a conexão TCP ainda está válida antes de desconectar
+                bool tcpStillValid = false;
+                if (oculusConnections.ContainsKey(oculusId))
+                {
+                    TcpClient client = oculusConnections[oculusId];
+                    if (client != null && client.Connected)
+                    {
+                        try
+                        {
+                            // Se o socket ainda está conectado, não desconectar mesmo sem pong
+                            Socket socket = client.Client;
+                            if (socket != null)
+                            {
+                                bool hasData = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead);
+                                bool hasNoData = socket.Available == 0;
+                                // Se não há dados mas socket ainda está válido, considerar conectado
+                                if (!(hasData && hasNoData))
+                                {
+                                    tcpStillValid = true;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Se houver erro ao verificar, considerar desconectado
+                        }
+                    }
+                }
+                
+                // Só considerar timeout se não há ping recente E conexão TCP não está mais válida
+                if (!hasRecentPing && !tcpStillValid)
                 {
                     // Verificar última atividade registrada para log detalhado
                     if (oculusLastActivity.ContainsKey(oculusId))
@@ -995,6 +1024,11 @@ public class OculusController : MonoBehaviour
                     }
                     
                     timeoutOculus.Add(oculusId);
+                }
+                else if (tcpStillValid)
+                {
+                    // Conexão TCP ainda válida, apenas atualizar atividade para evitar desconexão
+                    oculusLastActivity[oculusId] = now;
                 }
             }
         }
