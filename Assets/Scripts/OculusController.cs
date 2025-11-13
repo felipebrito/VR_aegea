@@ -52,11 +52,24 @@ public class OculusController : MonoBehaviour
     private Dictionary<int, bool> oculusConnected = new Dictionary<int, bool>();
     private Dictionary<int, float> oculusBattery = new Dictionary<int, float>();
     private Dictionary<int, DateTime> oculusLastPing = new Dictionary<int, DateTime>(); // Último ping enviado para cada Oculus
+    private Dictionary<int, DateTime> oculusLastPong = new Dictionary<int, DateTime>(); // Último pong recebido de cada Oculus
+    private Dictionary<int, DateTime> oculusLastActivity = new Dictionary<int, DateTime>(); // Última atividade (qualquer mensagem)
     private bool isPlaying = false;
     private float lastConnectionCheck = 0f;
     private float lastPingTime = 0f;
-    private const float CONNECTION_CHECK_INTERVAL = 5f; // Verificar conexões a cada 5 segundos
-    private const float PING_INTERVAL = 10f; // Enviar ping a cada 10 segundos
+    
+    [Header("Connection Settings")]
+    [Tooltip("Intervalo de ping em segundos (menor = mais estável, mas mais tráfego)")]
+    [Range(1f, 10f)]
+    public float pingInterval = 3f; // Ping a cada 3 segundos (muito frequente para máxima estabilidade)
+    
+    [Tooltip("Intervalo de verificação de conexão em segundos")]
+    [Range(1f, 10f)]
+    public float connectionCheckInterval = 2f; // Verificar a cada 2 segundos (detecção rápida)
+    
+    [Tooltip("Timeout de inatividade em segundos (sem pong = desconectado)")]
+    [Range(5f, 60f)]
+    public float inactivityTimeout = 20f; // Aumentado para 20s - mais tolerante a pausas temporárias (ex: Quest validando internet)
     
     void Start()
     {
@@ -115,6 +128,8 @@ public class OculusController : MonoBehaviour
             oculusConnected[i] = false;
             oculusBattery[i] = 0f;
             oculusLastPing[i] = DateTime.MinValue;
+            oculusLastPong[i] = DateTime.MinValue; // Inicializar também oculusLastPong
+            oculusLastActivity[i] = DateTime.MinValue; // Inicializar também oculusLastActivity
         }
     }
     
@@ -390,11 +405,20 @@ public class OculusController : MonoBehaviour
                     Debug.Log($"📥 Frame WebSocket recebido: {bytesRead} bytes");
                     Debug.Log($"📥 Primeiros bytes: {BitConverter.ToString(buffer, 0, Math.Min(20, bytesRead))}");
                     
-                    // Verificar se é ping antes de decodificar
+                    // Verificar tipo de frame antes de decodificar
                     if (bytesRead >= 2)
                     {
                         int opcode = buffer[0] & 0x0F;
-                        if (opcode == 0x9) // Ping
+                        
+                        // Verificar se é close frame (0x8)
+                        if (opcode == 0x8)
+                        {
+                            Debug.Log($"🔌 Close frame recebido do cliente - encerrando conexão");
+                            break; // Sair do loop para fechar conexão
+                        }
+                        
+                        // Verificar se é ping (0x9)
+                        if (opcode == 0x9)
                         {
                             Debug.Log("🏓 Ping recebido - enviando pong");
                             // Enviar pong (opcode 0xA)
@@ -412,6 +436,18 @@ public class OculusController : MonoBehaviour
                                 }
                             }
                             await stream.WriteAsync(pongFrame, 0, pongFrame.Length);
+                            continue;
+                        }
+                        
+                        // Verificar se é pong (0xA) - registrar pong recebido
+                        if (opcode == 0xA)
+                        {
+                            Debug.Log("🏓 Pong recebido");
+                            if (oculusId.HasValue)
+                            {
+                                oculusLastPong[oculusId.Value] = DateTime.Now; // Registrar pong recebido
+                                oculusLastActivity[oculusId.Value] = DateTime.Now; // Registrar atividade
+                            }
                             continue;
                         }
                     }
@@ -442,6 +478,8 @@ public class OculusController : MonoBehaviour
                                 oculusConnections[id] = client;
                                 oculusConnected[id] = true;
                                 oculusLastPing[id] = DateTime.Now; // Inicializar último ping
+                                oculusLastPong[id] = DateTime.Now; // Considerar conexão como tendo recebido um "pong" inicial
+                                oculusLastActivity[id] = DateTime.Now; // Registrar atividade inicial
                                 
                                 if (oculusPanels[id - 1] != null)
                                 {
@@ -458,6 +496,8 @@ public class OculusController : MonoBehaviour
                         // Já identificado, processar mensagem normalmente
                         if (oculusId.HasValue)
                         {
+                            // Registrar atividade (qualquer mensagem recebida)
+                            oculusLastActivity[oculusId.Value] = DateTime.Now;
                             ProcessMessageFromOculus(oculusId.Value, message);
                         }
                     }
@@ -927,15 +967,16 @@ public class OculusController : MonoBehaviour
         
         float currentTime = Time.time;
         
-        // Verificar conexões ativas periodicamente
-        if (currentTime - lastConnectionCheck >= CONNECTION_CHECK_INTERVAL)
+        // Verificar conexões ativas e timeout de inatividade
+        if (currentTime - lastConnectionCheck >= connectionCheckInterval)
         {
             CheckActiveConnections();
+            CheckInactivityTimeouts();
             lastConnectionCheck = currentTime;
         }
         
         // Enviar ping periódico para manter conexões vivas
-        if (currentTime - lastPingTime >= PING_INTERVAL)
+        if (currentTime - lastPingTime >= pingInterval)
         {
             _ = SendPingToAllConnected();
             lastPingTime = currentTime;
@@ -1030,6 +1071,11 @@ public class OculusController : MonoBehaviour
             // Atualizar status
             oculusConnected[oculusId] = false;
             
+            // Limpar timestamps de ping/pong/atividade
+            oculusLastPing.Remove(oculusId);
+            oculusLastPong.Remove(oculusId);
+            oculusLastActivity.Remove(oculusId);
+            
             // Atualizar UI
             if (oculusPanels != null && oculusId >= 1 && oculusId <= oculusPanels.Length)
             {
@@ -1061,6 +1107,89 @@ public class OculusController : MonoBehaviour
         foreach (int oculusId in disconnectedOculus)
         {
             Debug.LogWarning($"⚠️ Oculus {oculusId} desconectado detectado - limpando...");
+            CleanupDisconnectedOculus(oculusId);
+        }
+    }
+    
+    void CheckInactivityTimeouts()
+    {
+        DateTime now = DateTime.Now;
+        List<int> timeoutOculus = new List<int>();
+        
+        foreach (var kvp in oculusConnections.ToList())
+        {
+            int oculusId = kvp.Key;
+            
+            // Verificar timeout considerando pong, atividade geral e ping recente
+            bool hasRecentActivity = false;
+            
+            // Verificar se recebeu pong recentemente (melhor indicador de conexão viva)
+            if (oculusLastPong.ContainsKey(oculusId))
+            {
+                TimeSpan timeSincePong = now - oculusLastPong[oculusId];
+                if (timeSincePong.TotalSeconds <= inactivityTimeout)
+                {
+                    hasRecentActivity = true;
+                }
+            }
+            
+            // Verificar se houve qualquer atividade recente (mensagens, etc)
+            if (!hasRecentActivity && oculusLastActivity.ContainsKey(oculusId))
+            {
+                TimeSpan timeSinceActivity = now - oculusLastActivity[oculusId];
+                if (timeSinceActivity.TotalSeconds <= inactivityTimeout)
+                {
+                    hasRecentActivity = true;
+                }
+            }
+            
+            // Se não há atividade recente, verificar se enviou ping recentemente
+            // (pode estar aguardando resposta - dar mais tempo)
+            if (!hasRecentActivity)
+            {
+                bool hasRecentPing = false;
+                if (oculusLastPing.ContainsKey(oculusId))
+                {
+                    TimeSpan timeSincePing = now - oculusLastPing[oculusId];
+                    // Se enviou ping há menos de 5s, dar mais tempo para resposta
+                    // (Quest pode estar validando internet e demorar para responder)
+                    if (timeSincePing.TotalSeconds < 5f)
+                    {
+                        hasRecentPing = true;
+                    }
+                }
+                
+                // Só considerar timeout se não há ping recente também
+                if (!hasRecentPing)
+                {
+                    // Verificar última atividade registrada para log detalhado
+                    if (oculusLastActivity.ContainsKey(oculusId))
+                    {
+                        TimeSpan timeSinceActivity = now - oculusLastActivity[oculusId];
+                        Debug.LogWarning($"⚠️ Oculus {oculusId} sem atividade há {timeSinceActivity.TotalSeconds:F1}s (timeout: {inactivityTimeout}s)");
+                    }
+                    else if (oculusLastPong.ContainsKey(oculusId))
+                    {
+                        TimeSpan timeSincePong = now - oculusLastPong[oculusId];
+                        Debug.LogWarning($"⚠️ Oculus {oculusId} sem pong há {timeSincePong.TotalSeconds:F1}s (timeout: {inactivityTimeout}s)");
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"⚠️ Oculus {oculusId} conectado mas sem atividade registrada");
+                        // Dar mais uma chance - registrar atividade agora
+                        oculusLastActivity[oculusId] = now;
+                        continue; // Não desconectar ainda
+                    }
+                    
+                    timeoutOculus.Add(oculusId);
+                }
+            }
+        }
+        
+        // Limpar conexões com timeout
+        foreach (int oculusId in timeoutOculus)
+        {
+            Debug.LogWarning($"🔌 Oculus {oculusId} desconectado por timeout de inatividade");
             CleanupDisconnectedOculus(oculusId);
         }
     }
