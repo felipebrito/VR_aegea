@@ -66,11 +66,11 @@ public class VRManager : MonoBehaviour {
 
     [Header("Connection Settings")]
     [Tooltip("Intervalo de verificação de conexão em segundos")]
-    public float connectionCheckInterval = 3f; // Reduzido para detectar desconexões mais rápido
+    public float connectionCheckInterval = 3f; // Verifica conexão a cada 3 segundos para detectar desconexões rapidamente
     [Tooltip("Intervalo de ping/keep-alive em segundos")]
-    public float pingInterval = 10f; // Ping a cada 10 segundos para manter conexão viva
+    public float pingInterval = 3f; // Ping a cada 3 segundos para manter conexão viva (mais frequente = mais estável)
     [Tooltip("Número máximo de tentativas de reconexão (999 = nunca parar)")]
-    public int maxReconnectAttempts = 999; // Aumentado para nunca parar de tentar reconectar
+    public int maxReconnectAttempts = 999; // Nunca parar de tentar reconectar para máxima estabilidade
     private int reconnectAttempts = 0;
     private bool isReconnecting = false;
     private bool wasPaused = false;
