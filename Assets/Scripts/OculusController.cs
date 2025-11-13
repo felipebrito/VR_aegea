@@ -52,8 +52,8 @@ public class OculusController : MonoBehaviour
     public float pingInterval = 3f; // Ping a cada 3 segundos (muito frequente para máxima estabilidade)
     
     [Tooltip("Intervalo de verificação de conexão em segundos")]
-    [Range(1f, 10f)]
-    public float connectionCheckInterval = 2f; // Verificar a cada 2 segundos (detecção rápida)
+    [Range(1f, 30f)]
+    public float connectionCheckInterval = 10f; // Verificar a cada 10 segundos (menos agressivo)
     
     [Tooltip("Timeout de inatividade em segundos (DESABILITADO - confia apenas no TCP)")]
     [Range(5f, 120f)]
@@ -730,6 +730,8 @@ public class OculusController : MonoBehaviour
     
     bool IsOculusConnected(int oculusId)
     {
+        // SOLUÇÃO SIMPLIFICADA: Não usa Poll() que pode dar falsos positivos
+        // Confia apenas em client.Connected e exceções reais
         try
         {
             if (!oculusConnections.ContainsKey(oculusId))
@@ -738,35 +740,33 @@ public class OculusController : MonoBehaviour
             }
             
             TcpClient client = oculusConnections[oculusId];
-            if (client == null || !client.Connected)
+            if (client == null)
             {
-                CleanupDisconnectedOculus(oculusId);
                 return false;
             }
             
+            // Verificar apenas Connected - não usar Poll()
+            if (!client.Connected)
+            {
+                return false;
+            }
+            
+            // Tentar acessar socket - se der exceção, está morto
             try
             {
                 Socket socket = client.Client;
                 if (socket == null)
                 {
-                    CleanupDisconnectedOculus(oculusId);
                     return false;
                 }
                 
-                bool hasData = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead);
-                bool hasNoData = socket.Available == 0;
-                
-                if (hasData && hasNoData)
-                {
-                    CleanupDisconnectedOculus(oculusId);
-                    return false;
-                }
-                
+                // NÃO usar Poll() - pode dar falsos positivos
+                // Se chegou aqui sem exceção, conexão está OK
                 return true;
             }
             catch
             {
-                CleanupDisconnectedOculus(oculusId);
+                // Exceção ao acessar socket = desconectado
                 return false;
             }
         }
@@ -845,26 +845,16 @@ public class OculusController : MonoBehaviour
     
     void UpdateButtons()
     {
-        bool hasConnectedOculus = false;
-        for (int i = 1; i <= 4; i++)
-        {
-            if (oculusConnected.ContainsKey(i) && oculusConnected[i] &&
-                oculusConnections.ContainsKey(i) && oculusConnections[i] != null &&
-                oculusConnections[i].Connected)
-            {
-                hasConnectedOculus = true;
-                break;
-            }
-        }
-        
+        // Botões funcionam sempre que servidor está rodando
+        // Não depende de Oculus conectado - permite iniciar/parar mesmo sem conexão
         if (startButton != null)
         {
-            startButton.interactable = !isPlaying && isServerRunning && hasConnectedOculus;
+            startButton.interactable = !isPlaying && isServerRunning;
         }
         
         if (stopButton != null)
         {
-            stopButton.interactable = isServerRunning && (isPlaying || hasConnectedOculus);
+            stopButton.interactable = isServerRunning && isPlaying;
         }
     }
     
@@ -903,59 +893,54 @@ public class OculusController : MonoBehaviour
     
     void CheckActiveConnections()
     {
-        // SOLUÇÃO SIMPLIFICADA: Confia apenas no TCP nativo
-        // Se TCP está conectado, mantém conectado
-        // Só desconecta quando TCP realmente falha
-        List<int> disconnectedOculus = new List<int>();
+        // SOLUÇÃO ULTRA SIMPLIFICADA: Verificação mínima e não agressiva
+        // Só desconecta quando há EXCEÇÃO real ao tentar usar o socket
+        // Não verifica Poll() que pode dar falsos positivos
+        // Confia que se não há exceção, conexão está OK
         
         foreach (var kvp in oculusConnections.ToList())
         {
             int oculusId = kvp.Key;
             TcpClient client = kvp.Value;
             
-            // Verificação SIMPLES: apenas se TCP está realmente desconectado
+            // Verificação MÍNIMA: apenas se cliente é null
             if (client == null)
             {
-                disconnectedOculus.Add(oculusId);
+                Debug.LogWarning($"🔌 Oculus {oculusId} - cliente é null, limpando...");
+                CleanupDisconnectedOculus(oculusId);
                 continue;
             }
             
-            // Verificar se TCP está realmente desconectado (sem lógica complexa)
+            // Verificar apenas Connected - se false, está desconectado
+            // Não usar Poll() que pode dar falsos positivos
             try
             {
                 if (!client.Connected)
                 {
-                    disconnectedOculus.Add(oculusId);
+                    Debug.LogWarning($"🔌 Oculus {oculusId} - client.Connected = false, limpando...");
+                    CleanupDisconnectedOculus(oculusId);
                     continue;
                 }
                 
-                // Verificação TCP simples: se socket está morto
+                // Tentar acessar socket - se der exceção, está morto
+                // Mas NÃO usar Poll() que pode detectar falsos positivos
                 Socket socket = client.Client;
                 if (socket == null)
                 {
-                    disconnectedOculus.Add(oculusId);
+                    Debug.LogWarning($"🔌 Oculus {oculusId} - socket é null, limpando...");
+                    CleanupDisconnectedOculus(oculusId);
                     continue;
                 }
                 
-                // Poll com timeout 0 - se retorna true e não há dados, socket está fechado
-                bool socketDead = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead) && socket.Available == 0;
-                if (socketDead)
-                {
-                    disconnectedOculus.Add(oculusId);
-                }
+                // NÃO fazer Poll() - pode dar falsos positivos
+                // Se chegou aqui sem exceção, conexão está OK
             }
-            catch
+            catch (Exception ex)
             {
-                // Se houver exceção ao verificar, TCP está morto
-                disconnectedOculus.Add(oculusId);
+                // Só desconectar se houver EXCEÇÃO real ao acessar socket
+                Debug.LogWarning($"🔌 Oculus {oculusId} - exceção ao verificar: {ex.Message}, limpando...");
+                CleanupDisconnectedOculus(oculusId);
             }
-        }
-        
-        // Limpar apenas conexões realmente desconectadas
-        foreach (int oculusId in disconnectedOculus)
-        {
-            Debug.LogWarning($"🔌 Oculus {oculusId} desconectado (TCP falhou) - limpando...");
-            CleanupDisconnectedOculus(oculusId);
         }
     }
     
