@@ -76,6 +76,11 @@ public class OculusController : MonoBehaviour
     private bool isPlaying = false;
     private float lastPingTime = 0f;
     
+    // Sincronização para evitar race conditions com múltiplas conexões
+    private readonly object connectionsLock = new object();
+    private bool isPinging = false;
+    private bool isRequestingBattery = false;
+    
     void Start()
     {
         #if UNITY_ANDROID && !UNITY_EDITOR
@@ -387,7 +392,13 @@ public class OculusController : MonoBehaviour
                             // Atualizar última atividade quando recebe ping
                             if (oculusId.HasValue)
                             {
-                                oculusLastActivity[oculusId.Value] = DateTime.Now;
+                                lock (connectionsLock)
+                                {
+                                    if (oculusLastActivity.ContainsKey(oculusId.Value))
+                                    {
+                                        oculusLastActivity[oculusId.Value] = DateTime.Now;
+                                    }
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -403,8 +414,11 @@ public class OculusController : MonoBehaviour
                         // Atualizar último pong recebido
                         if (oculusId.HasValue)
                         {
-                            oculusLastPong[oculusId.Value] = DateTime.Now;
-                            oculusLastActivity[oculusId.Value] = DateTime.Now;
+                            lock (connectionsLock)
+                            {
+                                oculusLastPong[oculusId.Value] = DateTime.Now;
+                                oculusLastActivity[oculusId.Value] = DateTime.Now;
+                            }
                             Debug.Log($"🏓 Pong recebido do Oculus {oculusId.Value}");
                         }
                         continue;
@@ -420,10 +434,19 @@ public class OculusController : MonoBehaviour
                             continue;
                         }
                         
+                        // Log de TODAS as mensagens recebidas para debug
+                        Debug.Log($"📨 Mensagem recebida (Oculus {oculusId?.ToString() ?? "não identificado"}): '{message}'");
+                        
                         // Atualizar última atividade para qualquer mensagem recebida
                         if (oculusId.HasValue)
                         {
-                            oculusLastActivity[oculusId.Value] = DateTime.Now;
+                            lock (connectionsLock)
+                            {
+                                if (oculusLastActivity.ContainsKey(oculusId.Value))
+                                {
+                                    oculusLastActivity[oculusId.Value] = DateTime.Now;
+                                }
+                            }
                         }
                         
                         if (!identified)
@@ -436,12 +459,16 @@ public class OculusController : MonoBehaviour
                                     oculusId = id;
                                     identified = true;
                                     
-                                    oculusConnections[id] = client;
-                                    oculusConnected[id] = true;
-                                    oculusLastPing[id] = DateTime.Now;
-                                    oculusLastPong[id] = DateTime.Now;
-                                    oculusLastActivity[id] = DateTime.Now;
-                                    oculusReconnectAttempts[id] = 0;
+                                    // Proteger modificação dos dicionários com lock
+                                    lock (connectionsLock)
+                                    {
+                                        oculusConnections[id] = client;
+                                        oculusConnected[id] = true;
+                                        oculusLastPing[id] = DateTime.Now;
+                                        oculusLastPong[id] = DateTime.Now;
+                                        oculusLastActivity[id] = DateTime.Now;
+                                        oculusReconnectAttempts[id] = 0;
+                                    }
                                     
                                     if (oculusPanels[id - 1] != null)
                                     {
@@ -455,6 +482,12 @@ public class OculusController : MonoBehaviour
                                     Debug.LogWarning($"⚠️ ID inválido na mensagem vr_connected: '{idStr}'");
                                 }
                             }
+                            else if (message.StartsWith("CLIENT_INFO"))
+                            {
+                                // Processar CLIENT_INFO mesmo antes da identificação (pode chegar antes do vr_connected)
+                                Debug.Log($"📥 CLIENT_INFO recebido antes da identificação: {message}");
+                                // Aguardar identificação para processar
+                            }
                             else
                             {
                                 Debug.LogWarning($"⚠️ Mensagem recebida antes da identificação: {message}");
@@ -464,6 +497,7 @@ public class OculusController : MonoBehaviour
                         {
                             if (oculusId.HasValue)
                             {
+                                Debug.Log($"📥 Processando mensagem do Oculus {oculusId.Value}: {message}");
                                 ProcessMessageFromOculus(oculusId.Value, message);
                             }
                         }
@@ -502,8 +536,14 @@ public class OculusController : MonoBehaviour
         {
             if (oculusId.HasValue)
             {
-                oculusConnections.Remove(oculusId.Value);
-                oculusConnected[oculusId.Value] = false;
+                lock (connectionsLock)
+                {
+                    if (oculusConnections.ContainsKey(oculusId.Value))
+                    {
+                        oculusConnections.Remove(oculusId.Value);
+                    }
+                    oculusConnected[oculusId.Value] = false;
+                }
                 
                 if (oculusPanels[oculusId.Value - 1] != null)
                 {
@@ -640,7 +680,10 @@ public class OculusController : MonoBehaviour
                     // Validar valor recebido
                     if (batteryPercent >= 0f && batteryPercent <= 100f)
                     {
-                        oculusBattery[oculusId] = batteryPercent;
+                        lock (connectionsLock)
+                        {
+                            oculusBattery[oculusId] = batteryPercent;
+                        }
                         
                         if (oculusPanels[oculusId - 1] != null)
                         {
@@ -662,6 +705,73 @@ public class OculusController : MonoBehaviour
             else
             {
                 Debug.LogWarning($"⚠️ Formato de mensagem de bateria inválido: '{message}'");
+            }
+        }
+        else if (message.StartsWith("CLIENT_INFO"))
+        {
+            Debug.Log($"📥 Processando CLIENT_INFO do Oculus {oculusId}: {message}");
+            
+            // Formato: CLIENT_INFO:{clientName}|{clientIP}|{clientOS}|{batteryLevel}%
+            string[] parts = message.Split(':');
+            if (parts.Length >= 2)
+            {
+                string[] infoParts = parts[1].Split('|');
+                Debug.Log($"📥 CLIENT_INFO split: {infoParts.Length} partes");
+                
+                if (infoParts.Length >= 4)
+                {
+                    string clientName = infoParts[0];
+                    string clientIP = infoParts[1];
+                    string clientOS = infoParts[2];
+                    string batteryStr = infoParts[3].Replace("%", ""); // Remover o símbolo %
+                    
+                    Debug.Log($"📥 CLIENT_INFO - Nome: {clientName}, IP: {clientIP}, OS: {clientOS}, Bateria: '{batteryStr}'");
+                    
+                    if (int.TryParse(batteryStr, out int batteryLevel))
+                    {
+                        // Validar valor recebido
+                        if (batteryLevel >= 0 && batteryLevel <= 100)
+                        {
+                            // Proteger atualização do dicionário com lock
+                            lock (connectionsLock)
+                            {
+                                oculusBattery[oculusId] = batteryLevel;
+                            }
+                            
+                            if (oculusPanels[oculusId - 1] != null)
+                            {
+                                oculusPanels[oculusId - 1].SetBatteryLevel(batteryLevel);
+                                Debug.Log($"✅ Bateria atualizada no painel do Oculus {oculusId}: {batteryLevel}%");
+                            }
+                            else
+                            {
+                                Debug.LogWarning($"⚠️ oculusPanels[{oculusId - 1}] é null!");
+                            }
+                            
+                            Debug.Log($"🔋 CLIENT_INFO do Oculus {oculusId}: {clientName} | {clientIP} | {clientOS} | {batteryLevel}%");
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"⚠️ Valor de bateria inválido no CLIENT_INFO do Oculus {oculusId}: {batteryLevel}%");
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"⚠️ Não foi possível fazer parse da bateria no CLIENT_INFO do Oculus {oculusId}: '{batteryStr}'");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"⚠️ Formato de CLIENT_INFO inválido - esperado 4 partes, recebido {infoParts.Length}: '{message}'");
+                    for (int i = 0; i < infoParts.Length; i++)
+                    {
+                        Debug.LogWarning($"  Parte {i}: '{infoParts[i]}'");
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"⚠️ CLIENT_INFO não tem formato correto (sem ':') - '{message}'");
             }
         }
         else if (message.StartsWith("percent"))
@@ -822,25 +932,31 @@ public class OculusController : MonoBehaviour
     {
         // SOLUÇÃO SIMPLES: Verificar apenas se está no dicionário e Connected
         // Não limpa conexões aqui - deixa TCP gerenciar
-        try
+        // Protegido com lock para evitar race conditions
+        lock (connectionsLock)
         {
-            if (!oculusConnections.ContainsKey(oculusId))
+            try
+            {
+                if (!oculusConnections.ContainsKey(oculusId) ||
+                    !oculusConnected.ContainsKey(oculusId) ||
+                    !oculusConnected[oculusId])
+                {
+                    return false;
+                }
+                
+                TcpClient client = oculusConnections[oculusId];
+                if (client == null)
+                {
+                    return false;
+                }
+                
+                // Verificar apenas Connected - confia no TCP
+                return client.Connected;
+            }
+            catch
             {
                 return false;
             }
-            
-            TcpClient client = oculusConnections[oculusId];
-            if (client == null)
-            {
-                return false;
-            }
-            
-            // Verificar apenas Connected - confia no TCP
-            return client.Connected;
-        }
-        catch
-        {
-            return false;
         }
     }
     
@@ -848,21 +964,30 @@ public class OculusController : MonoBehaviour
     {
         try
         {
-            if (oculusConnections.ContainsKey(oculusId))
+            TcpClient clientToClose = null;
+            
+            // Proteger modificação dos dicionários com lock
+            lock (connectionsLock)
             {
-                TcpClient client = oculusConnections[oculusId];
-                try { client?.Close(); } catch { }
-                oculusConnections.Remove(oculusId);
+                if (oculusConnections.ContainsKey(oculusId))
+                {
+                    clientToClose = oculusConnections[oculusId];
+                    oculusConnections.Remove(oculusId);
+                }
+                
+                oculusConnected[oculusId] = false;
+                
+                // Limpar timestamps de ping/pong/atividade
+                oculusLastPing.Remove(oculusId);
+                oculusLastPong.Remove(oculusId);
+                oculusLastActivity.Remove(oculusId);
+                oculusReconnectAttempts.Remove(oculusId);
             }
             
-            oculusConnected[oculusId] = false;
+            // Fechar conexão fora do lock para evitar deadlock
+            try { clientToClose?.Close(); } catch { }
             
-            // Limpar timestamps de ping/pong/atividade
-            oculusLastPing.Remove(oculusId);
-            oculusLastPong.Remove(oculusId);
-            oculusLastActivity.Remove(oculusId);
-            oculusReconnectAttempts.Remove(oculusId);
-            
+            // Atualizar UI fora do lock
             if (oculusPanels != null && oculusId >= 1 && oculusId <= oculusPanels.Length)
             {
                 if (oculusPanels[oculusId - 1] != null)
@@ -938,17 +1063,40 @@ public class OculusController : MonoBehaviour
         // TCP gerencia conexões automaticamente - não precisa verificar
         // Conexão só é limpa quando ReceiveMessagesAndIdentifyOculus termina naturalmente
         
-        // Enviar ping periódico apenas para manter conexão viva (não desconecta)
-        if (currentTime - lastPingTime >= pingInterval)
+        // Enviar ping periódico (reduzido para 5s para evitar sobrecarga com múltiplas conexões)
+        if (currentTime - lastPingTime >= 5f) // Mudado de pingInterval para 5f fixo
         {
-            _ = SendPingToAllConnected();
             lastPingTime = currentTime;
+            // Verificar se já existe uma task rodando antes de criar nova
+            if (!isPinging)
+            {
+                isPinging = true;
+                _ = SendPingToAllConnected().ContinueWith(t => 
+                { 
+                    isPinging = false; 
+                    if (t.IsFaulted)
+                    {
+                        Debug.LogWarning($"⚠️ Erro ao enviar pings: {t.Exception?.GetBaseException()?.Message}");
+                    }
+                });
+            }
         }
         
-        // Solicitar status da bateria periodicamente
-        if (Time.frameCount % 300 == 0)
+        // Solicitar status da bateria menos frequentemente (a cada 10 segundos)
+        if (Time.frameCount % 600 == 0) // Mudado de 300 para 600 frames (~10s a 60fps)
         {
-            _ = RequestBatteryStatus();
+            if (!isRequestingBattery)
+            {
+                isRequestingBattery = true;
+                _ = RequestBatteryStatus().ContinueWith(t => 
+                { 
+                    isRequestingBattery = false; 
+                    if (t.IsFaulted)
+                    {
+                        Debug.LogWarning($"⚠️ Erro ao solicitar bateria: {t.Exception?.GetBaseException()?.Message}");
+                    }
+                });
+            }
         }
     }
     
@@ -966,14 +1114,21 @@ public class OculusController : MonoBehaviour
         // Enviar ping para manter conexão viva - não verifica/desconecta
         // Se der erro ao enviar, TCP vai detectar naturalmente
         List<Task> pingTasks = new List<Task>();
+        List<KeyValuePair<int, TcpClient>> connectionsCopy;
         
-        foreach (var kvp in oculusConnections.ToList())
+        // Criar cópia da lista de conexões dentro do lock para evitar race conditions
+        lock (connectionsLock)
+        {
+            connectionsCopy = oculusConnections.ToList();
+        }
+        
+        foreach (var kvp in connectionsCopy)
         {
             int oculusId = kvp.Key;
             TcpClient client = kvp.Value;
             
             // Tentar enviar ping - se falhar, TCP vai detectar naturalmente
-            if (client != null)
+            if (client != null && client.Connected)
             {
                 pingTasks.Add(SendPingToOculus(oculusId, client));
             }
@@ -989,6 +1144,7 @@ public class OculusController : MonoBehaviour
             {
                 // Erro ao enviar ping - não fazer nada, TCP vai detectar se conexão está morta
                 // Não limpar conexões aqui - deixar TCP gerenciar
+                Debug.LogWarning($"⚠️ Erro ao enviar pings: {e.Message}");
             }
         }
     }
@@ -1016,7 +1172,13 @@ public class OculusController : MonoBehaviour
             await stream.WriteAsync(pingFrame, 0, pingFrame.Length);
             
             // Atualizar último ping enviado
-            oculusLastPing[oculusId] = DateTime.Now;
+            lock (connectionsLock)
+            {
+                if (oculusLastPing.ContainsKey(oculusId))
+                {
+                    oculusLastPing[oculusId] = DateTime.Now;
+                }
+            }
             
             // Log apenas ocasionalmente para não poluir
             if (Time.frameCount % 60 == 0)
@@ -1032,13 +1194,34 @@ public class OculusController : MonoBehaviour
     
     async Task RequestBatteryStatus()
     {
-        for (int i = 1; i <= 4; i++)
+        List<int> connectedIds = new List<int>();
+        
+        // Criar lista de IDs conectados dentro do lock
+        lock (connectionsLock)
         {
-            if (oculusConnected.ContainsKey(i) && oculusConnected[i] &&
-                oculusConnections.ContainsKey(i))
+            for (int i = 1; i <= 4; i++)
             {
-                string message = $"get_battery{i}";
-                await SendMessageToOculus(i, message);
+                if (oculusConnected.ContainsKey(i) && oculusConnected[i] &&
+                    oculusConnections.ContainsKey(i) && 
+                    oculusConnections[i] != null &&
+                    oculusConnections[i].Connected)
+                {
+                    connectedIds.Add(i);
+                }
+            }
+        }
+        
+        // Enviar mensagens fora do lock
+        foreach (int oculusId in connectedIds)
+        {
+            try
+            {
+                string message = $"get_battery{oculusId}";
+                await SendMessageToOculus(oculusId, message);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"⚠️ Erro ao solicitar bateria do Oculus {oculusId}: {e.Message}");
             }
         }
     }
@@ -1047,7 +1230,14 @@ public class OculusController : MonoBehaviour
     {
         isServerRunning = false;
         
-        foreach (var kvp in oculusConnections)
+        // Criar cópia da lista dentro do lock para evitar race conditions
+        List<KeyValuePair<int, TcpClient>> connectionsCopy;
+        lock (connectionsLock)
+        {
+            connectionsCopy = oculusConnections.ToList();
+        }
+        
+        foreach (var kvp in connectionsCopy)
         {
             try
             {

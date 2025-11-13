@@ -9,6 +9,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
 using TMPro;
 
 #if UNITY_ANDROID && !UNITY_EDITOR && USING_OCULUS_SDK
@@ -41,10 +43,17 @@ public class VRManager : MonoBehaviour {
     private string currentVideo = "";
     private int lastSentPercent = -1;
     
+    // Simulação de bateria no Editor
+    private float simulatedBatteryLevel = 75f;
+    private float batteryOscillationDirection = 1f;
+    private float lastBatteryUpdateTime = 0f;
+    
     // Controle de conexão
     private bool isShuttingDown = false;
     private CancellationTokenSource shutdownCts = null;
     private bool isReconnecting = false;
+    private bool isReceivingMessages = false;
+    private readonly object webSocketLock = new object();
     
     // Menu de configuração (opcional - para compatibilidade com ConfigMenuHelper)
     public GameObject configMenuUI;
@@ -100,41 +109,74 @@ public class VRManager : MonoBehaviour {
     }
     
     async Task ConnectWebSocket() {
-        // Limpar conexão anterior se existir
-        if (webSocket != null) {
-            try {
-                if (webSocket.State == WebSocketState.Open) {
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", CancellationToken.None);
-                }
-                webSocket.Dispose();
-            } catch { }
-            webSocket = null;
+        // Prevenir múltiplas conexões simultâneas
+        lock (webSocketLock) {
+            if (isReconnecting) {
+                Debug.LogWarning("⚠️ Já está reconectando, ignorando nova tentativa");
+                return;
+            }
         }
         
-        webSocket = new ClientWebSocket();
-        webSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(5);
+        // Limpar conexão anterior se existir
+        lock (webSocketLock) {
+            if (webSocket != null) {
+                try {
+                    if (webSocket.State == WebSocketState.Open) {
+                        webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", CancellationToken.None).Wait(1000);
+                    }
+                    webSocket.Dispose();
+                } catch { }
+                webSocket = null;
+            }
+            
+            // Cancelar InvokeRepeating anterior se existir
+            CancelInvoke(nameof(SendClientInfoPeriodic));
+        }
+        
+        ClientWebSocket newWebSocket = new ClientWebSocket();
+        newWebSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(5);
         
         Debug.Log($"🌐 Conectando ao WebSocket: {serverUri}");
         
         using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10))) {
             try {
-                await webSocket.ConnectAsync(new Uri(serverUri), cts.Token);
+                await newWebSocket.ConnectAsync(new Uri(serverUri), cts.Token);
                 Debug.Log("✅ Conexão WebSocket estabelecida");
                 
-                // Iniciar recebimento de mensagens
-                ReceiveMessages();
+                // Atualizar webSocket dentro do lock
+                lock (webSocketLock) {
+                    webSocket = newWebSocket;
+                }
+                
+                // Iniciar recebimento de mensagens (apenas se não estiver já recebendo)
+                if (!isReceivingMessages) {
+                    isReceivingMessages = true;
+                    ReceiveMessages();
+                }
                 
                 // Enviar mensagem de conexão
                 await SendMessage($"vr_connected{userNumber}");
+                Debug.Log($"✅ Mensagem vr_connected{userNumber} enviada");
                 
-                // Enviar status inicial da bateria
-                await SendBatteryStatus();
+                // Aguardar um pouco para garantir que a conexão está estável
+                await Task.Delay(500);
                 
-                // Iniciar envio periódico de bateria (a cada 30 segundos)
-                InvokeRepeating(nameof(SendBatteryStatusPeriodic), 30f, 30f);
+                // Enviar informações do cliente (inclui bateria)
+                Debug.Log("🔋 Tentando enviar CLIENT_INFO...");
+                await SendClientInfo();
+                
+                // Iniciar envio periódico de informações (a cada 30 segundos)
+                // Cancelar anterior antes de criar novo
+                CancelInvoke(nameof(SendClientInfoPeriodic));
+                InvokeRepeating(nameof(SendClientInfoPeriodic), 30f, 30f);
+                Debug.Log("✅ Envio periódico de CLIENT_INFO configurado (30s)");
             }
             catch (OperationCanceledException) {
                 Debug.LogWarning("⚠️ Conexão cancelada (timeout)");
+                // Limpar websocket em caso de erro
+                try {
+                    newWebSocket?.Dispose();
+                } catch { }
                 // Não tentar reconectar imediatamente se foi cancelado
             }
             catch (Exception e) {
@@ -142,10 +184,11 @@ public class VRManager : MonoBehaviour {
                 Debug.LogWarning("⚠️ Aplicação continuará funcionando em modo offline");
                 
                 // Limpar websocket em caso de erro
-                if (webSocket != null) {
-                    try {
-                        webSocket.Dispose();
-                    } catch { }
+                try {
+                    newWebSocket?.Dispose();
+                } catch { }
+                
+                lock (webSocketLock) {
                     webSocket = null;
                 }
                 
@@ -159,11 +202,25 @@ public class VRManager : MonoBehaviour {
     
     async void ReceiveMessages() {
         byte[] buffer = new byte[1024];
+        ClientWebSocket currentWebSocket;
         
-        while (webSocket != null && webSocket.State == WebSocketState.Open && !isShuttingDown) {
+        // Obter referência ao webSocket dentro do lock
+        lock (webSocketLock) {
+            currentWebSocket = webSocket;
+        }
+        
+        while (currentWebSocket != null && !isShuttingDown) {
             try {
+                // Verificar estado dentro do loop
+                lock (webSocketLock) {
+                    currentWebSocket = webSocket;
+                    if (currentWebSocket == null || currentWebSocket.State != WebSocketState.Open) {
+                        break;
+                    }
+                }
+                
                 CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
-                WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                WebSocketReceiveResult result = await currentWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                 
                 if (result.MessageType == WebSocketMessageType.Close) {
                     Debug.LogWarning("🔌 Servidor solicitou fechamento da conexão");
@@ -180,11 +237,17 @@ public class VRManager : MonoBehaviour {
                 break;
             }
             catch (Exception e) {
-                if (webSocket == null || isShuttingDown) break;
+                lock (webSocketLock) {
+                    currentWebSocket = webSocket;
+                }
+                if (currentWebSocket == null || isShuttingDown) break;
                 Debug.LogWarning($"⚠️ Erro ao receber mensagem: {e.Message}");
                 break;
             }
         }
+        
+        // Marcar que não está mais recebendo mensagens
+        isReceivingMessages = false;
         
         // Tentar reconectar se não estiver em shutdown (sem bloquear)
         if (!isShuttingDown && !isReconnecting && !offlineMode && this != null && this.isActiveAndEnabled) {
@@ -245,7 +308,8 @@ public class VRManager : MonoBehaviour {
         
         // Solicitação de bateria: get_battery{id}
         if (message.Equals($"get_battery{userNumber}", StringComparison.OrdinalIgnoreCase)) {
-            _ = SendBatteryStatus();
+            Debug.Log($"🔋 Solicitação de bateria recebida: {message}");
+            _ = SendClientInfo(); // Enviar CLIENT_INFO em vez de apenas bateria
             return;
         }
     }
@@ -445,83 +509,133 @@ public class VRManager : MonoBehaviour {
     // ========== BATERIA ==========
     
     float GetBatteryLevel() {
-        float batteryLevel = -1f;
+        Debug.Log($"🔋 GetBatteryLevel() chamado - Platform: {Application.platform}, Editor: {Application.isEditor}");
         
-        #if UNITY_ANDROID && !UNITY_EDITOR && USING_OCULUS_SDK
-        // Método 1: Tentar usar OVRPlugin (método nativo do Oculus)
+        #if UNITY_EDITOR
+        // No Editor, retornar valor simulado que oscila para testes
+        float currentTime = Time.time;
+        
+        // Atualizar a cada 2 segundos
+        if (currentTime - lastBatteryUpdateTime >= 2f) {
+            lastBatteryUpdateTime = currentTime;
+            
+            // Oscilar entre 60% e 95%
+            simulatedBatteryLevel += batteryOscillationDirection * 5f;
+            
+            if (simulatedBatteryLevel >= 95f) {
+                simulatedBatteryLevel = 95f;
+                batteryOscillationDirection = -1f; // Começar a descer
+            } else if (simulatedBatteryLevel <= 60f) {
+                simulatedBatteryLevel = 60f;
+                batteryOscillationDirection = 1f; // Começar a subir
+            }
+        }
+        
+        Debug.Log($"🔋 Editor detectado - retornando valor simulado oscilante: {simulatedBatteryLevel:F1}%");
+        return simulatedBatteryLevel;
+        #elif UNITY_ANDROID
+        Debug.Log("🔋 Entrando no bloco UNITY_ANDROID");
+        
+        // Método 1: Tentar SystemInfo primeiro (mais simples e confiável no Quest)
+        try {
+            Debug.Log("🔋 Tentando SystemInfo.batteryLevel...");
+            float systemBattery = SystemInfo.batteryLevel;
+            Debug.Log($"🔋 SystemInfo.batteryLevel retornou: {systemBattery}");
+            
+            // SystemInfo.batteryLevel retorna valor entre 0.0 e 1.0, ou -1 se não disponível
+            if (systemBattery >= 0f && systemBattery <= 1f) {
+                float batteryPercent = systemBattery * 100f;
+                Debug.Log($"🔋 Bateria via SystemInfo: {batteryPercent:F1}%");
+                if (batteryPercent >= 0f && batteryPercent <= 100f) {
+                    return batteryPercent;
+                }
+            } else if (systemBattery > 1f && systemBattery <= 100f) {
+                // Pode retornar já em percentual em algumas versões
+                Debug.Log($"🔋 SystemInfo retornou percentual direto: {systemBattery:F1}%");
+                return systemBattery;
+            } else if (systemBattery == -1f) {
+                Debug.LogWarning("⚠️ SystemInfo.batteryLevel retornou -1 (não disponível)");
+            }
+        } catch (Exception e) {
+            Debug.LogWarning($"⚠️ Erro ao usar SystemInfo.batteryLevel: {e.Message}");
+        }
+        
+        #if USING_OCULUS_SDK
+        // Método 2: Tentar usar OVRPlugin (método nativo do Oculus)
         try {
             float oculusBattery = OVRPlugin.GetSystemBatteryLevel();
+            Debug.Log($"🔋 OVRPlugin.GetSystemBatteryLevel() retornou: {oculusBattery}");
+            
+            // OVRPlugin retorna valor entre 0.0 e 1.0
             if (oculusBattery >= 0f && oculusBattery <= 1f) {
-                batteryLevel = oculusBattery * 100f;
-                Debug.Log($"🔋 Bateria via OVRPlugin: {batteryLevel:F1}%");
-                return batteryLevel;
+                float batteryPercent = oculusBattery * 100f;
+                Debug.Log($"🔋 Bateria via OVRPlugin: {batteryPercent:F1}%");
+                if (batteryPercent >= 0f && batteryPercent <= 100f) {
+                    return batteryPercent;
+                }
             } else {
                 Debug.LogWarning($"⚠️ Valor inválido do OVRPlugin: {oculusBattery}");
             }
         } catch (Exception e) {
             Debug.LogWarning($"⚠️ Erro ao usar OVRPlugin.GetSystemBatteryLevel(): {e.Message}");
         }
-        
-        // Método 2: Tentar usar OVRPlugin com método alternativo
-        try {
-            // Tentar obter via SystemInfo se disponível
-            if (SystemInfo.batteryLevel >= 0f) {
-                batteryLevel = SystemInfo.batteryLevel * 100f;
-                Debug.Log($"🔋 Bateria via SystemInfo: {batteryLevel:F1}%");
-                if (batteryLevel >= 0f && batteryLevel <= 100f) {
-                    return batteryLevel;
-                }
-            }
-        } catch (Exception e) {
-            Debug.LogWarning($"⚠️ Erro ao usar SystemInfo.batteryLevel: {e.Message}");
-        }
         #endif
         
-        // Método 3: Fallback para Android API nativa
-        batteryLevel = GetBatteryLevelAndroid();
-        if (batteryLevel >= 0f && batteryLevel <= 100f) {
-            return batteryLevel;
-        }
-        
-        // Se nenhum método funcionou, retornar valor padrão
-        Debug.LogWarning($"⚠️ Não foi possível obter nível da bateria, usando fallback");
-        return 0f;
-    }
-    
-    float GetBatteryLevelAndroid() {
-        #if UNITY_ANDROID && !UNITY_EDITOR
+        // Método 3: Fallback para Android API nativa (baseado em exemplos online)
         try {
-            using (AndroidJavaClass unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
-            using (AndroidJavaObject activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
-            using (AndroidJavaObject intentFilter = new AndroidJavaObject("android.content.IntentFilter", "android.intent.action.BATTERY_CHANGED"))
-            using (AndroidJavaObject batteryStatus = activity.Call<AndroidJavaObject>("registerReceiver", null, intentFilter)) {
-                if (batteryStatus != null) {
-                    int level = batteryStatus.Call<int>("getIntExtra", "level", -1);
-                    int scale = batteryStatus.Call<int>("getIntExtra", "scale", -1);
-                    
-                    if (level >= 0 && scale > 0) {
-                        float batteryPercent = (level * 100f) / scale;
-                        Debug.Log($"🔋 Bateria via Android API: {batteryPercent:F1}% (level={level}, scale={scale})");
-                        
-                        // Validar valor
-                        if (batteryPercent >= 0f && batteryPercent <= 100f) {
-                            return batteryPercent;
-                        } else {
-                            Debug.LogWarning($"⚠️ Valor de bateria inválido: {batteryPercent}%");
-                        }
-                    } else {
-                        Debug.LogWarning($"⚠️ Valores inválidos: level={level}, scale={scale}");
-                    }
-                } else {
-                    Debug.LogWarning("⚠️ batteryStatus é null");
-                }
+            Debug.Log("🔋 Tentando obter bateria via Android API nativa...");
+            
+            AndroidJavaClass unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            AndroidJavaObject currentActivity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+            
+            if (currentActivity == null) {
+                Debug.LogError("❌ currentActivity é null!");
+                return -1f;
+            }
+            
+            AndroidJavaObject intentFilter = new AndroidJavaObject("android.content.IntentFilter", "android.intent.action.BATTERY_CHANGED");
+            AndroidJavaObject batteryIntent = currentActivity.Call<AndroidJavaObject>("registerReceiver", null, intentFilter);
+            
+            if (batteryIntent == null) {
+                Debug.LogError("❌ batteryIntent é null após registerReceiver!");
+                return -1f;
+            }
+            
+            int level = batteryIntent.Call<int>("getIntExtra", "level", -1);
+            int scale = batteryIntent.Call<int>("getIntExtra", "scale", -1);
+            
+            Debug.Log($"🔋 Android API - level: {level}, scale: {scale}");
+            
+            if (level == -1 || scale == -1 || scale == 0) {
+                Debug.LogWarning($"⚠️ Valores inválidos: level={level}, scale={scale}");
+                return -1f;
+            }
+            
+            float batteryPercent = ((float)level / (float)scale) * 100f;
+            Debug.Log($"🔋 Bateria obtida via Android API: {batteryPercent:F1}%");
+            
+            // Validar resultado
+            if (batteryPercent >= 0f && batteryPercent <= 100f) {
+                return batteryPercent;
+            } else {
+                Debug.LogWarning($"⚠️ Valor de bateria fora do range: {batteryPercent:F1}%");
+                return -1f;
             }
         } catch (Exception e) {
             Debug.LogError($"❌ Erro ao obter bateria via Android API: {e.Message}");
             Debug.LogError($"❌ StackTrace: {e.StackTrace}");
+            return -1f;
         }
+        
+        #elif UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        Debug.Log("🔋 Entrando no bloco UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN");
+        float battery = SystemInfo.batteryLevel * 100f;
+        Debug.Log($"🔋 Bateria (Editor/Windows): {battery:F1}%");
+        return battery;
+        #else
+        Debug.LogWarning($"⚠️ Plataforma não suportada para leitura de bateria - Platform: {Application.platform}");
+        return -1f;
         #endif
-        return -1f; // Retornar -1 para indicar falha
     }
     
     async Task SendBatteryStatus() {
@@ -551,50 +665,149 @@ public class VRManager : MonoBehaviour {
         await SendBatteryStatus();
     }
     
+    // ========== CLIENT INFO ==========
+    
+    string GetLocalIPAddress() {
+        try {
+            string hostName = Dns.GetHostName();
+            IPHostEntry hostEntry = Dns.GetHostEntry(hostName);
+            
+            foreach (IPAddress ip in hostEntry.AddressList) {
+                if (ip.AddressFamily == AddressFamily.InterNetwork && 
+                    !IPAddress.IsLoopback(ip)) {
+                    return ip.ToString();
+                }
+            }
+        } catch (Exception e) {
+            Debug.LogWarning($"⚠️ Erro ao obter IP local: {e.Message}");
+        }
+        return "0.0.0.0";
+    }
+    
+    async Task SendClientInfo() {
+        try {
+            if (isShuttingDown) {
+                Debug.LogWarning("⚠️ SendClientInfo: isShuttingDown = true");
+                return;
+            }
+            
+            if (offlineMode) {
+                Debug.LogWarning("⚠️ SendClientInfo: offlineMode = true");
+                return;
+            }
+            
+            ClientWebSocket currentWebSocket;
+            lock (webSocketLock) {
+                currentWebSocket = webSocket;
+            }
+            
+            if (currentWebSocket == null) {
+                Debug.LogWarning("⚠️ SendClientInfo: webSocket é null");
+                return;
+            }
+            
+            if (currentWebSocket.State != WebSocketState.Open) {
+                Debug.LogWarning($"⚠️ SendClientInfo: webSocket.State = {currentWebSocket.State}");
+                return;
+            }
+            
+            string clientName = SystemInfo.deviceName;
+            string clientIP = GetLocalIPAddress();
+            string clientOS = SystemInfo.operatingSystem;
+            float batteryFloat = GetBatteryLevel();
+            int batteryLevel = (int)batteryFloat;
+            
+            Debug.Log($"🔋 SendClientInfo: GetBatteryLevel() retornou {batteryFloat:F1}% (int: {batteryLevel}%)");
+            
+            // Validar valor de bateria antes de enviar
+            if (batteryLevel < 0 || batteryLevel > 100) {
+                Debug.LogWarning($"⚠️ Valor de bateria inválido: {batteryLevel}% - não enviando CLIENT_INFO");
+                return;
+            }
+            
+            string infoMessage = $"CLIENT_INFO:{clientName}|{clientIP}|{clientOS}|{batteryLevel}%";
+            
+            byte[] data = Encoding.UTF8.GetBytes(infoMessage);
+            CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+            await currentWebSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
+            
+            Debug.Log($"✅ CLIENT_INFO enviado com sucesso: {infoMessage}");
+            Debug.Log($"✅ Tamanho da mensagem: {data.Length} bytes");
+        } catch (Exception e) {
+            Debug.LogError($"❌ Erro ao enviar informações do cliente: {e.Message}");
+            Debug.LogError($"❌ StackTrace: {e.StackTrace}");
+        }
+    }
+    
+    async void SendClientInfoPeriodic() {
+        await SendClientInfo();
+    }
+    
     // ========== COMUNICAÇÃO ==========
     
     public async Task SendMessage(string message) {
         try {
             if (isShuttingDown || offlineMode) return;
             
-            if (webSocket != null && webSocket.State == WebSocketState.Open) {
+            ClientWebSocket currentWebSocket;
+            lock (webSocketLock) {
+                currentWebSocket = webSocket;
+            }
+            
+            if (currentWebSocket != null && currentWebSocket.State == WebSocketState.Open) {
                 byte[] data = Encoding.UTF8.GetBytes(message);
                 CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
+                await currentWebSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
             } else {
                 // Conexão não disponível - silenciosamente ignorar (não é erro crítico)
-                if (webSocket == null || webSocket.State != WebSocketState.Open) {
-                    // Tentar reconectar em background se não estiver já tentando
-                    if (!isReconnecting && !isShuttingDown) {
-                        StartCoroutine(ReconnectAfterDelay(5f));
+                bool shouldReconnect = false;
+                lock (webSocketLock) {
+                    if (currentWebSocket == null || currentWebSocket.State != WebSocketState.Open) {
+                        shouldReconnect = !isReconnecting && !isShuttingDown;
                     }
+                }
+                
+                // Tentar reconectar em background se não estiver já tentando
+                if (shouldReconnect) {
+                    StartCoroutine(ReconnectAfterDelay(5f));
                 }
             }
         } catch (OperationCanceledException) {
             // Ignorar durante shutdown
         } catch (Exception e) {
             // Log apenas se for um erro inesperado (não apenas falta de conexão)
-            if (webSocket != null && webSocket.State == WebSocketState.Open) {
+            ClientWebSocket currentWebSocket;
+            lock (webSocketLock) {
+                currentWebSocket = webSocket;
+            }
+            if (currentWebSocket != null && currentWebSocket.State == WebSocketState.Open) {
                 Debug.LogWarning($"⚠️ Erro ao enviar mensagem: {e.Message}");
             }
         }
     }
     
     async void ReconnectWebSocket() {
-        if (isShuttingDown || isReconnecting || offlineMode) return;
-        
-        isReconnecting = true;
+        // Prevenir múltiplas reconexões simultâneas
+        lock (webSocketLock) {
+            if (isShuttingDown || isReconnecting || offlineMode) return;
+            isReconnecting = true;
+        }
         
         // Limpar conexão anterior
-        if (webSocket != null) {
-            try {
-                if (webSocket.State == WebSocketState.Open) {
-                    CancellationTokenSource cts = new CancellationTokenSource(1000);
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", cts.Token);
-                }
-                webSocket.Dispose();
-            } catch { }
-            webSocket = null;
+        lock (webSocketLock) {
+            if (webSocket != null) {
+                try {
+                    if (webSocket.State == WebSocketState.Open) {
+                        CancellationTokenSource cts = new CancellationTokenSource(1000);
+                        webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconectando", cts.Token).Wait(1000);
+                    }
+                    webSocket.Dispose();
+                } catch { }
+                webSocket = null;
+            }
+            
+            // Cancelar InvokeRepeating
+            CancelInvoke(nameof(SendClientInfoPeriodic));
         }
         
         Debug.Log("🔄 Tentando reconectar...");
@@ -603,7 +816,9 @@ public class VRManager : MonoBehaviour {
             CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
             await Task.Delay(3000, ct);
         } catch (OperationCanceledException) {
-            isReconnecting = false;
+            lock (webSocketLock) {
+                isReconnecting = false;
+            }
             return;
         }
         
@@ -615,7 +830,9 @@ public class VRManager : MonoBehaviour {
             Debug.LogWarning("⚠️ Aplicação continuará funcionando sem conexão");
         }
         
-        isReconnecting = false;
+        lock (webSocketLock) {
+            isReconnecting = false;
+        }
     }
     
     // ========== MÉTODOS DE TESTE ==========
@@ -650,16 +867,19 @@ public class VRManager : MonoBehaviour {
         CancelInvoke();
         StopAllCoroutines();
         
-        if (webSocket != null) {
-            try {
-                webSocket.Abort();
-            } catch { }
-            finally {
+        // Limpar webSocket de forma thread-safe
+        lock (webSocketLock) {
+            if (webSocket != null) {
+                try {
+                    webSocket.Abort();
+                } catch { }
                 try {
                     webSocket.Dispose();
                 } catch { }
                 webSocket = null;
             }
+            isReconnecting = false;
+            isReceivingMessages = false;
         }
         
         if (shutdownCts != null) {
@@ -681,16 +901,19 @@ public class VRManager : MonoBehaviour {
             CancelInvoke();
             StopAllCoroutines();
             
-            if (webSocket != null) {
-                try {
-                    webSocket.Abort();
-                } catch { }
-                finally {
+            // Limpar webSocket de forma thread-safe
+            lock (webSocketLock) {
+                if (webSocket != null) {
+                    try {
+                        webSocket.Abort();
+                    } catch { }
                     try {
                         webSocket.Dispose();
                     } catch { }
                     webSocket = null;
                 }
+                isReconnecting = false;
+                isReceivingMessages = false;
             }
             
             if (shutdownCts != null) {
