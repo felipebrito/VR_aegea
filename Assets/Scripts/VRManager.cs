@@ -1132,7 +1132,7 @@ public class VRManager : MonoBehaviour {
         webSocket = new ClientWebSocket();
         
         // Configurar opções de keep-alive para manter conexão viva
-        webSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);  // Keep-alive a cada 10s
+        webSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(5);  // Keep-alive a cada 5s (mais frequente para evitar timeout)
         
         Debug.Log("🌐 Tentando conectar ao WebSocket em " + serverUri);
         

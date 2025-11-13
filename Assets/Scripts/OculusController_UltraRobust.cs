@@ -19,7 +19,7 @@ using System.IO;
 /// VERSÃO ANTI-INTERFERÊNCIA: Ping mais frequente, detecção rápida de desconexões,
 /// timeout de inatividade, retry automático e reconexão agressiva.
 /// </summary>
-public class OculusController_UltraRobust : MonoBehaviour
+public class OculusController : MonoBehaviour
 {
     [Header("WebSocket Server Settings")]
     [Tooltip("Porta do servidor WebSocket")]
@@ -56,8 +56,8 @@ public class OculusController_UltraRobust : MonoBehaviour
     public float connectionCheckInterval = 2f; // Verificar a cada 2 segundos (detecção rápida)
     
     [Tooltip("Timeout de inatividade em segundos (sem pong = desconectado)")]
-    [Range(5f, 30f)]
-    public float inactivityTimeout = 10f; // Se não receber pong em 10s, considera desconectado
+    [Range(5f, 60f)]
+    public float inactivityTimeout = 20f; // Aumentado para 20s - mais tolerante a pausas temporárias (ex: Quest validando internet)
     
     [Tooltip("Número máximo de tentativas de reconexão")]
     [Range(1, 999)]
@@ -927,26 +927,68 @@ public class OculusController_UltraRobust : MonoBehaviour
         {
             int oculusId = kvp.Key;
             
-            // Verificar se há última atividade registrada
-            if (oculusLastActivity.ContainsKey(oculusId))
+            // Verificar timeout considerando pong, atividade geral e ping recente
+            bool hasRecentActivity = false;
+            
+            // Verificar se recebeu pong recentemente (melhor indicador de conexão viva)
+            if (oculusLastPong.ContainsKey(oculusId))
             {
-                TimeSpan timeSinceActivity = now - oculusLastActivity[oculusId];
-                
-                // Se não houve atividade em mais de inactivityTimeout segundos, considerar desconectado
-                if (timeSinceActivity.TotalSeconds > inactivityTimeout)
+                TimeSpan timeSincePong = now - oculusLastPong[oculusId];
+                if (timeSincePong.TotalSeconds <= inactivityTimeout)
                 {
-                    Debug.LogWarning($"⚠️ Oculus {oculusId} sem atividade há {timeSinceActivity.TotalSeconds:F1}s (timeout: {inactivityTimeout}s)");
-                    timeoutOculus.Add(oculusId);
+                    hasRecentActivity = true;
                 }
             }
-            else
+            
+            // Verificar se houve qualquer atividade recente (mensagens, etc)
+            if (!hasRecentActivity && oculusLastActivity.ContainsKey(oculusId))
             {
-                // Se nunca teve atividade registrada e está "conectado", pode ser problema
-                if (oculusConnected.ContainsKey(oculusId) && oculusConnected[oculusId])
+                TimeSpan timeSinceActivity = now - oculusLastActivity[oculusId];
+                if (timeSinceActivity.TotalSeconds <= inactivityTimeout)
                 {
-                    Debug.LogWarning($"⚠️ Oculus {oculusId} conectado mas sem atividade registrada");
-                    // Dar mais uma chance - registrar atividade agora
-                    oculusLastActivity[oculusId] = now;
+                    hasRecentActivity = true;
+                }
+            }
+            
+            // Se não há atividade recente, verificar se enviou ping recentemente
+            // (pode estar aguardando resposta - dar mais tempo)
+            if (!hasRecentActivity)
+            {
+                bool hasRecentPing = false;
+                if (oculusLastPing.ContainsKey(oculusId))
+                {
+                    TimeSpan timeSincePing = now - oculusLastPing[oculusId];
+                    // Se enviou ping há menos de 5s, dar mais tempo para resposta
+                    // (Quest pode estar validando internet e demorar para responder)
+                    if (timeSincePing.TotalSeconds < 5f)
+                    {
+                        hasRecentPing = true;
+                    }
+                }
+                
+                // Só considerar timeout se não há ping recente também
+                if (!hasRecentPing)
+                {
+                    // Verificar última atividade registrada para log detalhado
+                    if (oculusLastActivity.ContainsKey(oculusId))
+                    {
+                        TimeSpan timeSinceActivity = now - oculusLastActivity[oculusId];
+                        Debug.LogWarning($"⚠️ Oculus {oculusId} sem atividade há {timeSinceActivity.TotalSeconds:F1}s (timeout: {inactivityTimeout}s)");
+                    }
+                    else if (oculusLastPong.ContainsKey(oculusId))
+                    {
+                        TimeSpan timeSincePong = now - oculusLastPong[oculusId];
+                        Debug.LogWarning($"⚠️ Oculus {oculusId} sem pong há {timeSincePong.TotalSeconds:F1}s (timeout: {inactivityTimeout}s)");
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"⚠️ Oculus {oculusId} conectado mas sem atividade registrada");
+                        // Dar mais uma chance - registrar atividade agora
+                        oculusLastActivity[oculusId] = now;
+                        continue; // Não desconectar ainda
+                    }
+                    
+                    timeoutOculus.Add(oculusId);
                 }
             }
         }
