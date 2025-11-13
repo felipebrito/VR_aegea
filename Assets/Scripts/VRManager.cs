@@ -74,6 +74,8 @@ public class VRManager : MonoBehaviour {
     private int reconnectAttempts = 0;
     private bool isReconnecting = false;
     private bool wasPaused = false;
+    private bool isShuttingDown = false; // Flag para indicar que a aplicação está fechando
+    private CancellationTokenSource shutdownCts = null; // Token para cancelar operações async durante shutdown
 
     [Header("User Settings")]
     [Tooltip("Identifica se esta build é do usuário 1, 2, 3 ou 4 (afeta as mensagens enviadas)")]
@@ -1016,11 +1018,14 @@ public class VRManager : MonoBehaviour {
     // Método periódico para enviar ping (chamado via InvokeRepeating)
     async void SendPingPeriodic() {
         try {
-            if (this == null || !this.isActiveAndEnabled) {
+            if (this == null || !this.isActiveAndEnabled || isShuttingDown) {
                 CancelInvoke(nameof(SendPingPeriodic));
                 return;
             }
             await SendPing();
+        } catch (OperationCanceledException) {
+            // Cancelado durante shutdown - ignorar
+            CancelInvoke(nameof(SendPingPeriodic));
         } catch (Exception ex) {
             Debug.LogError($"❌ [User {userNumber}] Erro em SendPingPeriodic: {ex.Message}");
         }
@@ -1029,6 +1034,11 @@ public class VRManager : MonoBehaviour {
     // Método para enviar ping WebSocket (keep-alive)
     async Task SendPing() {
         try {
+            // Não enviar ping durante shutdown
+            if (isShuttingDown) {
+                return;
+            }
+            
             if (webSocket == null) {
                 if (diagnosticMode) {
                     Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket é null - não é possível enviar ping");
@@ -1040,8 +1050,8 @@ public class VRManager : MonoBehaviour {
                 if (diagnosticMode) {
                     Debug.LogWarning($"⚠️ [User {userNumber}] WebSocket não está aberto (Estado: {webSocket.State}) - não é possível enviar ping");
                 }
-                // Tentar reconectar se ping falhar
-                if (!isReconnecting) {
+                // Tentar reconectar se ping falhar (mas não durante shutdown)
+                if (!isReconnecting && !isShuttingDown) {
                     ReconnectWebSocket();
                 }
                 return;
@@ -1051,7 +1061,8 @@ public class VRManager : MonoBehaviour {
             // O servidor WebSocket deve responder com PONG ou ignorar
             string pingMessage = "PING:" + DateTime.Now.Ticks;
             byte[] data = Encoding.UTF8.GetBytes(pingMessage);
-            await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
+            CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+            await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
             
             if (diagnosticMode) {
                 Debug.Log($"📡 [User {userNumber}] Ping WebSocket enviado (keep-alive)");
@@ -1102,7 +1113,14 @@ public class VRManager : MonoBehaviour {
         
         // Aguarda um tempo com base no número de tentativas (backoff exponencial)
         float waitTime = Mathf.Min(1 * Mathf.Pow(1.5f, reconnectAttempts - 1), 10);
-        await Task.Delay((int)(waitTime * 1000));
+        try {
+            CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+            await Task.Delay((int)(waitTime * 1000), ct);
+        } catch (OperationCanceledException) {
+            Debug.Log($"🛑 [User {userNumber}] Reconexão cancelada durante shutdown");
+            isReconnecting = false;
+            return;
+        }
         
         // Tenta conectar novamente
         await ConnectWebSocket();
@@ -1189,9 +1207,11 @@ public class VRManager : MonoBehaviour {
     async void ReceiveMessages() {
         byte[] buffer = new byte[1024];
 
-        while (webSocket != null && webSocket.State == WebSocketState.Open) {
+        while (webSocket != null && webSocket.State == WebSocketState.Open && !isShuttingDown) {
             try {
-                WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                // Usar CancellationToken para poder cancelar durante shutdown
+                CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+                WebSocketReceiveResult result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                 
                 if (result.MessageType == WebSocketMessageType.Close) {
                     Debug.LogWarning("🔌 Servidor solicitou fechamento da conexão");
@@ -1205,19 +1225,23 @@ public class VRManager : MonoBehaviour {
                 
                 Debug.Log($"🔵 Mensagem recebida do Admin: {message}");
                 ProcessReceivedMessage(message);
+            } catch (OperationCanceledException) {
+                // Operação cancelada durante shutdown - sair silenciosamente
+                Debug.Log($"🛑 [User {userNumber}] ReceiveMessages cancelado durante shutdown");
+                break;
             } catch (Exception e) {
-                if (webSocket == null) break;
+                if (webSocket == null || isShuttingDown) break;
                 
-                Debug.LogError($"❌ Erro ao receber mensagem: {e.Message}");
+                Debug.LogError($"❌ [User {userNumber}] Erro ao receber mensagem: {e.Message}");
                 break;
             }
         }
 
-        Debug.LogWarning("🚨 Loop de recebimento de mensagens encerrado!");
+        Debug.LogWarning($"🚨 [User {userNumber}] Loop de recebimento de mensagens encerrado!");
         
-        // Só tenta reconectar se não estiver em processo de reconexão e o objeto ainda existir
-        if (!isReconnecting && webSocket != null && this != null && !this.isActiveAndEnabled) {
-            Debug.Log("🔄 Agendando reconexão após falha no recebimento de mensagens");
+        // Só tenta reconectar se não estiver em shutdown, não estiver em processo de reconexão e o objeto ainda existir
+        if (!isShuttingDown && !isReconnecting && webSocket != null && this != null && this.isActiveAndEnabled) {
+            Debug.Log($"🔄 [User {userNumber}] Agendando reconexão após falha no recebimento de mensagens");
             // Usar um coroutine em vez de Invoke para evitar problemas de referência
             StartCoroutine(ReconnectAfterDelay(2f));
         }
@@ -1468,7 +1492,7 @@ void ProcessReceivedMessage(string message) {
     }
     
     void SendTimecode() {
-        if (videoPlayer == null || !videoPlayer.isPlaying) return;
+        if (isShuttingDown || videoPlayer == null || !videoPlayer.isPlaying) return;
         
         float currentTime = (float)videoPlayer.time;
         float videoDuration = (float)videoPlayer.length;
@@ -1496,9 +1520,10 @@ void ProcessReceivedMessage(string message) {
             
             string message = $"percent{userNumber}:" + percent.ToString();
             
-            if (webSocket != null && webSocket.State == WebSocketState.Open) {
+            if (webSocket != null && webSocket.State == WebSocketState.Open && !isShuttingDown) {
                 byte[] data = Encoding.UTF8.GetBytes(message);
-                webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
+                CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+                webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
                 Debug.Log($"🎯 PERCENTUAL USER {userNumber}: {message} (tempo: {currentTime:F1}s / {videoDuration:F1}s)");
             }
         }
@@ -1507,28 +1532,38 @@ void ProcessReceivedMessage(string message) {
     // Enviar mensagem de VR conectado
     async Task SendVRConnected() {
         try {
+            if (isShuttingDown) return;
+            
             if (webSocket != null && webSocket.State == WebSocketState.Open) {
                 string message = $"vr_connected{userNumber}";
                 byte[] data = Encoding.UTF8.GetBytes(message);
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
-                Debug.Log($"✅ Enviando: {message}");
+                CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
+                Debug.Log($"✅ [User {userNumber}] Enviando: {message}");
             }
+        } catch (OperationCanceledException) {
+            // Cancelado durante shutdown - ignorar
         } catch (Exception e) {
-            Debug.LogError($"❌ Erro ao enviar vr_connected{userNumber}: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] Erro ao enviar vr_connected{userNumber}: {e.Message}");
         }
     }
     
     // Enviar mensagem de vídeo terminado
     async Task SendVideoEnded() {
         try {
+            if (isShuttingDown) return;
+            
             if (webSocket != null && webSocket.State == WebSocketState.Open) {
                 string message = $"video_ended{userNumber}";
                 byte[] data = Encoding.UTF8.GetBytes(message);
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
-                Debug.Log($"🎬 Enviando: {message}");
+                CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
+                Debug.Log($"🎬 [User {userNumber}] Enviando: {message}");
             }
+        } catch (OperationCanceledException) {
+            // Cancelado durante shutdown - ignorar
         } catch (Exception e) {
-            Debug.LogError($"❌ Erro ao enviar video_ended{userNumber}: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] Erro ao enviar video_ended{userNumber}: {e.Message}");
         }
     }
 
@@ -1578,15 +1613,20 @@ void ProcessReceivedMessage(string message) {
     // Enviar status da bateria
     async Task SendBatteryStatus() {
         try {
+            if (isShuttingDown) return;
+            
             if (webSocket != null && webSocket.State == WebSocketState.Open) {
                 float batteryLevel = GetBatteryLevel();
                 string message = $"battery{userNumber}:{batteryLevel:F1}";
                 byte[] data = Encoding.UTF8.GetBytes(message);
-                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, CancellationToken.None);
-                Debug.Log($"🔋 Enviando status da bateria: {batteryLevel:F1}%");
+                CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
+                await webSocket.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Text, true, ct);
+                Debug.Log($"🔋 [User {userNumber}] Enviando status da bateria: {batteryLevel:F1}%");
             }
+        } catch (OperationCanceledException) {
+            // Cancelado durante shutdown - ignorar
         } catch (Exception e) {
-            Debug.LogError($"❌ Erro ao enviar status da bateria: {e.Message}");
+            Debug.LogError($"❌ [User {userNumber}] Erro ao enviar status da bateria: {e.Message}");
         }
     }
 
@@ -1601,19 +1641,107 @@ void ProcessReceivedMessage(string message) {
         await SendBatteryStatus();
     }
 
-    void OnDestroy() {
-        // Limpa as invocações pendentes
+    // Chamado quando a aplicação está sendo fechada (antes de OnDestroy)
+    void OnApplicationQuit() {
+        Debug.Log($"🛑 [User {userNumber}] OnApplicationQuit chamado - iniciando shutdown...");
+        isShuttingDown = true;
+        
+        // Criar CancellationTokenSource para cancelar operações async
+        if (shutdownCts == null) {
+            shutdownCts = new CancellationTokenSource();
+        } else {
+            shutdownCts.Cancel();
+        }
+        
+        // Cancelar todas as invocações pendentes
         CancelInvoke();
         
-        // Fecha a conexão WebSocket de forma limpa
-        if (webSocket != null && webSocket.State == WebSocketState.Open) {
+        // Parar todas as coroutines
+        StopAllCoroutines();
+        
+        // Fechar WebSocket de forma síncrona (com timeout)
+        if (webSocket != null) {
             try {
-                // A operação é assíncrona, mas no OnDestroy não podemos aguardar
-                // Estamos apenas iniciando o processo de fechamento
-                webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Aplicativo fechado", CancellationToken.None);
+                if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived) {
+                    // Tentar fechar com timeout curto
+                    CancellationTokenSource closeCts = new CancellationTokenSource(500); // 500ms timeout
+                    webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Aplicativo fechando", closeCts.Token)
+                        .ContinueWith(task => {
+                            try {
+                                if (webSocket != null) {
+                                    webSocket.Dispose();
+                                }
+                            } catch (Exception e) {
+                                Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {e.Message}");
+                            }
+                        });
+                } else {
+                    webSocket.Dispose();
+                }
             } catch (Exception e) {
-                Debug.LogError($"❌ Erro ao fechar WebSocket: {e.Message}");
+                Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fechar WebSocket no OnApplicationQuit: {e.Message}");
+                try {
+                    if (webSocket != null) {
+                        webSocket.Dispose();
+                    }
+                } catch (Exception disposeEx) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {disposeEx.Message}");
+                }
             }
+            webSocket = null;
+        }
+        
+        Debug.Log($"✅ [User {userNumber}] Shutdown concluído");
+    }
+    
+    void OnDestroy() {
+        try {
+            Debug.Log($"🔷 [User {userNumber}] OnDestroy chamado");
+            
+            // Garantir que shutdown foi iniciado
+            isShuttingDown = true;
+            
+            // Cancelar token se ainda não foi cancelado
+            if (shutdownCts != null && !shutdownCts.IsCancellationRequested) {
+                shutdownCts.Cancel();
+            }
+            
+            // Limpa as invocações pendentes (redundante, mas seguro)
+            CancelInvoke();
+            
+            // Parar todas as coroutines (redundante, mas seguro)
+            StopAllCoroutines();
+            
+            // Fechar WebSocket se ainda não foi fechado
+            if (webSocket != null) {
+                try {
+                    // Tentar fechar rapidamente
+                    if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived) {
+                        CancellationTokenSource closeCts = new CancellationTokenSource(200); // 200ms timeout muito curto
+                        webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "OnDestroy", closeCts.Token);
+                    }
+                } catch (Exception e) {
+                    Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fechar WebSocket no OnDestroy: {e.Message}");
+                } finally {
+                    try {
+                        webSocket.Dispose();
+                    } catch (Exception disposeEx) {
+                        Debug.LogWarning($"⚠️ [User {userNumber}] Erro ao fazer dispose do WebSocket: {disposeEx.Message}");
+                    }
+                    webSocket = null;
+                }
+            }
+            
+            // Dispose do CancellationTokenSource
+            if (shutdownCts != null) {
+                shutdownCts.Dispose();
+                shutdownCts = null;
+            }
+            
+            Debug.Log($"🔷 [User {userNumber}] VRManager destruído");
+        } catch (Exception ex) {
+            Debug.LogError($"❌ [User {userNumber}] Erro em OnDestroy: {ex.Message}");
+            // Não propaga exceção em OnDestroy para evitar crash
         }
     }
 
