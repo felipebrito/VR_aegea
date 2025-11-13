@@ -8,14 +8,14 @@ Baseado no scan WiFi fornecido:
   - Canal 1: **10 redes** (CONGESTIONADO)
   - Canal 6: **13 redes** (MUITO CONGESTIONADO - EVITAR!)
   - Canal 9: **2 redes** (BOM)
-  - Canal 11: **2 redes** (BOM, mas já está usando)
+  - Canal 11: **2 redes** (BOM, mas já está usando e pode ter interferência)
 
-## 🔍 IMPORTANTE: ESP32 e 5GHz
+## 🔍 IMPORTANTE: ESP32 e 2.4GHz
 
-**ESP32 padrão (ESP32-WROOM, ESP32-DevKit) NÃO suporta 5GHz!**
-- Apenas **ESP32-S3** e alguns modelos específicos suportam 5GHz
-- Se você tentar usar canal 149 (5GHz) em ESP32 padrão, ele não funcionará
-- Por isso o scan mostra AEGEA-ESP no Canal 11 (2.4GHz)
+**ESP32 padrão (ESP32-WROOM, ESP32-DevKit) funciona APENAS em 2.4GHz!**
+- Este documento foca na solução para ESP32 padrão usando banda 2.4GHz
+- Canais disponíveis: 1-13 (dependendo do país)
+- Canais que não se sobrepõem: 1, 6, 11 (padrão) ou 3, 9, 13 (alternativas)
 
 ## ✅ SOLUÇÃO: ESP32_WEBSOCKET_SERVER_2.4GHz.ino
 
@@ -42,7 +42,7 @@ Baseado no scan WiFi fornecido:
 
 ### Como Mudar o Canal:
 
-No arquivo `.ino`, linha 18:
+No arquivo `ESP32_WEBSOCKET_SERVER_2.4GHz.ino`, linha 39:
 ```cpp
 int wifiChannel = 3; // Mude para 9 ou 13 se necessário
 ```
@@ -52,12 +52,13 @@ int wifiChannel = 3; // Mude para 9 ou 13 se necessário
 ### 1. Atualizar ESP32
 
 1. Abra `ESP32_WEBSOCKET_SERVER_2.4GHz.ino` no Arduino IDE
-2. Se necessário, mude o canal (linha 18):
+2. Se necessário, mude o canal (linha 39):
    ```cpp
    int wifiChannel = 9; // Ou 13, se disponível
    ```
 3. Faça upload para o ESP32
 4. Verifique no Serial Monitor que está no canal correto
+5. Confirme que o Serial Monitor mostra: `Canal: 3 (2.4GHz)` ou o canal escolhido
 
 ### 2. Verificar Conexão
 
@@ -75,31 +76,37 @@ O código do tablet já está otimizado:
 
 ## 🎯 Por Que Funciona?
 
-1. **Canal Menos Congestionado**: Canal 3 não aparece no scan, então provavelmente está livre
-2. **Ping Frequente (3s)**: Mantém conexão viva mesmo com interferência temporária
-3. **Potência Máxima**: Sinal mais forte = menos perda de pacotes
-4. **Detecção Rápida**: Identifica desconexões em 2-3 segundos
+1. **Canal Menos Congestionado**: Canal 3 não aparece no scan 2.4GHz, então provavelmente está livre de interferência
+2. **Ping Frequente (3s)**: Mantém conexão WebSocket viva mesmo com interferência temporária de outras redes
+3. **Potência Máxima (19.5dBm)**: Sinal mais forte = menos perda de pacotes e maior alcance
+4. **Detecção Rápida (2-3s)**: Identifica desconexões rapidamente e inicia reconexão automática
+5. **WiFi Sleep Desabilitado**: Conexão sempre ativa, sem pausas que podem causar desconexões
+6. **Auto-Reconnect**: Reconecta automaticamente se houver perda temporária de conexão
 
 ## 🔧 Troubleshooting
 
 ### Problema: Ainda desconecta no Canal 3
 **Solução**: Tente Canal 9 (apenas 2 redes no scan)
 ```cpp
+// No arquivo ESP32_WEBSOCKET_SERVER_2.4GHz.ino, linha 39:
 int wifiChannel = 9;
 ```
 
 ### Problema: Canal 13 não funciona
 **Solução**: Alguns países não permitem Canal 13. Use Canal 9:
 ```cpp
+// No arquivo ESP32_WEBSOCKET_SERVER_2.4GHz.ino, linha 39:
 int wifiChannel = 9;
 ```
 
-### Problema: Muitas redes em todos os canais
+### Problema: Muitas redes em todos os canais 2.4GHz
 **Solução**: 
-1. Use Canal 3 (menos congestionado)
-2. Aumente potência (já está em 19.5dBm - máximo)
-3. Reduza distância entre ESP32 e Oculus
-4. Considere usar ESP32-S3 (suporta 5GHz) se disponível
+1. Use Canal 3 (não aparece no scan - provavelmente livre)
+2. Se Canal 3 não funcionar, tente Canal 9 (apenas 2 redes)
+3. Potência já está em 19.5dBm (máximo) - não pode aumentar mais
+4. Reduza distância física entre ESP32 e Oculus (melhora sinal)
+5. Verifique se há objetos bloqueando o sinal (paredes, metais)
+6. Considere usar antena externa se disponível no seu ESP32
 
 ### Problema: ESP32 não aparece no scan
 **Solução**: 
@@ -129,8 +136,15 @@ Com essas mudanças:
 
 ## 📝 Notas Importantes
 
-1. **ESP32 padrão = 2.4GHz apenas**: Não tente usar canais 5GHz (149, 153, etc.) em ESP32 padrão
-2. **Canais não se sobrepõem completamente**: Canais 1, 6, 11 são os melhores, mas estão congestionados no seu ambiente
-3. **Canal 3 é uma boa alternativa**: Não aparece no scan, então provavelmente está livre
-4. **Teste diferentes canais**: Se Canal 3 não funcionar bem, tente 9 ou 13
+1. **ESP32 padrão = 2.4GHz apenas**: Este documento é para ESP32 padrão (WROOM, DevKit) que suporta apenas 2.4GHz
+2. **Canais que não se sobrepõem**: 
+   - Padrão: 1, 6, 11 (mas estão congestionados no seu ambiente)
+   - Alternativas: 3, 9, 13 (menos usados)
+3. **Canal 3 é a melhor opção inicial**: Não aparece no scan, então provavelmente está livre
+4. **Ordem de teste recomendada**: 
+   - Primeiro: Canal 3 (livre)
+   - Se não funcionar: Canal 9 (apenas 2 redes)
+   - Último recurso: Canal 13 (se disponível no seu país)
+5. **Como mudar canal**: Edite linha 39 do arquivo `ESP32_WEBSOCKET_SERVER_2.4GHz.ino`
+6. **Verificação**: Após upload, confira no Serial Monitor qual canal está sendo usado
 
