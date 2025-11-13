@@ -1123,7 +1123,8 @@ public class VRManager : MonoBehaviour {
         UpdateDebugText($"Reconectando... Tentativa {reconnectAttempts}/{maxReconnectAttempts}");
         
         // Aguarda um tempo com base no número de tentativas (backoff exponencial)
-        float waitTime = Mathf.Min(1 * Mathf.Pow(1.5f, reconnectAttempts - 1), 10);
+        // Mínimo de 3 segundos para evitar reconexões muito rápidas que causam ciclo
+        float waitTime = Mathf.Max(3f, Mathf.Min(3 * Mathf.Pow(1.5f, reconnectAttempts - 1), 15));
         try {
             CancellationToken ct = shutdownCts != null ? shutdownCts.Token : CancellationToken.None;
             await Task.Delay((int)(waitTime * 1000), ct);
