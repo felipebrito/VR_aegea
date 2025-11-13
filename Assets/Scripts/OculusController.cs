@@ -4,6 +4,7 @@ using TMPro;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq; // Adicionado para ToList()
 using System.Net;
 using System.Net.WebSockets;
 using System.Net.Sockets;
@@ -945,6 +946,100 @@ public class OculusController : MonoBehaviour
         {
             _ = RequestBatteryStatus();
         }
+    }
+    
+    bool IsOculusConnected(int oculusId)
+    {
+        try
+        {
+            if (!oculusConnections.ContainsKey(oculusId))
+            {
+                return false;
+            }
+            
+            TcpClient client = oculusConnections[oculusId];
+            if (client == null)
+            {
+                // Limpar entrada inválida
+                oculusConnections.Remove(oculusId);
+                oculusConnected[oculusId] = false;
+                return false;
+            }
+            
+            // Verificar se está conectado
+            if (!client.Connected)
+            {
+                // Limpar conexão desconectada
+                CleanupDisconnectedOculus(oculusId);
+                return false;
+            }
+            
+            // Verificar se o socket ainda está válido e ativo
+            try
+            {
+                Socket socket = client.Client;
+                if (socket == null)
+                {
+                    CleanupDisconnectedOculus(oculusId);
+                    return false;
+                }
+                
+                // Verificar se o socket está realmente conectado usando Poll
+                // Poll com timeout 0 retorna true se há dados ou se a conexão foi fechada
+                bool hasData = socket.Poll(0, System.Net.Sockets.SelectMode.SelectRead);
+                bool hasNoData = socket.Available == 0;
+                
+                // Se Poll retorna true mas não há dados, a conexão foi fechada
+                if (hasData && hasNoData)
+                {
+                    CleanupDisconnectedOculus(oculusId);
+                    return false;
+                }
+                
+                return true;
+            }
+            catch
+            {
+                // Se houver erro ao verificar socket, limpar e considerar desconectado
+                CleanupDisconnectedOculus(oculusId);
+                return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+    
+    void CleanupDisconnectedOculus(int oculusId)
+    {
+        try
+        {
+            // Remover do dicionário de conexões
+            if (oculusConnections.ContainsKey(oculusId))
+            {
+                TcpClient client = oculusConnections[oculusId];
+                try
+                {
+                    client?.Close();
+                }
+                catch { }
+                oculusConnections.Remove(oculusId);
+            }
+            
+            // Atualizar status
+            oculusConnected[oculusId] = false;
+            
+            // Atualizar UI
+            if (oculusPanels != null && oculusId >= 1 && oculusId <= oculusPanels.Length)
+            {
+                if (oculusPanels[oculusId - 1] != null)
+                {
+                    oculusPanels[oculusId - 1].SetOnlineStatus(false);
+                }
+            }
+        }
+        catch { }
     }
     
     void CheckActiveConnections()
